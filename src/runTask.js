@@ -100,6 +100,7 @@ async function clickReliable(page, selector, { nav = false, timeout = 20000, ret
 }
 
 /** ---------- Calendar helpers ---------- */
+
 async function gotoDate(page, isoDate, debug = false) {
   if (debug) console.log("📅 gotoDate →", isoDate);
 
@@ -217,9 +218,80 @@ async function openBestEvent(page, targetDate, targetTime, targetName = "", debu
   await sleep(200);
 
   // Click the primary link/button inside the modal that navigates to edit form
-  await clickReliable(page, '#schedule_modal_container a.btn-primary, .modal a.btn-primary', { nav: true });
+  await clickModalPrimary(page, { timeout: 25000 });
   return true;
 }
+
+async function clickModalPrimary(page, { timeout = 20000 } = {}) {
+  // Wait for any modal/root we know about
+  const modalSel = "#schedule_modal_container, .modal.show, .modal[style*='display: block']";
+  const modal = await page.waitForSelector(modalSel, { visible: true, timeout });
+
+  // First, try common primary-action selectors
+  const candidates = [
+    // very specific first
+    "#schedule_modal_container a.btn-primary",
+    "#schedule_modal_container button.btn-primary",
+    // general modal primaries
+    ".modal.show a.btn-primary",
+    ".modal.show button.btn-primary",
+    ".modal .modal-footer .btn-primary",
+    // sometimes it's just 'btn' not 'btn-primary'
+    ".modal.show .modal-footer .btn",
+    ".modal.show .btn.btn-primary",
+  ];
+  for (const sel of candidates) {
+    const found = await page.$(sel);
+    if (found) {
+      await clickReliable(page, sel, { nav: true, timeout });
+      return true;
+    }
+  }
+
+  // Fallback: choose by text inside the modal (Editar / Edit / Ver / Detalles)
+  const ok = await page.evaluate(() => {
+    const root =
+      document.querySelector("#schedule_modal_container") ||
+      document.querySelector(".modal.show") ||
+      document.querySelector(".modal[style*='display: block']");
+    if (!root) return false;
+
+    const isPrimary = (el) => {
+      const c = (el.className || "").toLowerCase();
+      return c.includes("btn-primary") || c.includes("btn");
+    };
+
+    const wantsText = (t) => {
+      t = (t || "").toLowerCase();
+      return (
+        t.includes("editar") || t.includes("edit") ||
+        t.includes("ver") || t.includes("detalle") ||
+        t.includes("abrir")
+      );
+    };
+
+    // Prefer buttons/links with "primary-ish" class and good text
+    const els = Array.from(root.querySelectorAll("a, button"));
+    const preferred = els.find((el) => isPrimary(el) && wantsText(el.textContent));
+    const anyPrimary = preferred || els.find(isPrimary) || els[0];
+    if (!anyPrimary) return false;
+
+    anyPrimary.scrollIntoView({ block: "center", behavior: "instant" });
+    anyPrimary.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    return true;
+  });
+
+  if (ok) {
+    // If the JS click triggered nav, wait for it
+    try {
+      await page.waitForNavigation({ waitUntil: "networkidle0", timeout });
+    } catch {}
+    return true;
+  }
+
+  throw new Error("No primary action found in modal.");
+}
+
 
 /** ---------- Main exported runner ---------- */
 export async function runTask(input = {}) {
