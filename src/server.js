@@ -1,6 +1,8 @@
 import express from "express";
 import bodyParser from "body-parser";
 import { runTask } from "./runTask.js";
+import fs from "fs";
+import path from "path";
 
 const app = express();
 app.use(bodyParser.json({ limit: "200kb" })); // small but safe
@@ -26,7 +28,7 @@ app.post("/run", async (req, res) => {
   running = true;
 
   // hard guard so Railway proxy never sees us hang forever
-  const GUARD_MS = Number(process.env.REQUEST_GUARD_MS || 60_000); // 60s
+  const GUARD_MS = Number(process.env.REQUEST_GUARD_MS || 120_000); // 60s
   const guard = setTimeout(() => console.error("[/run] guard timeout hit"), GUARD_MS);
 
   try {
@@ -42,6 +44,14 @@ app.post("/run", async (req, res) => {
   } finally {
     running = false;
   }
+});
+
+app.get("/debug/last-screenshot", (req, res) => {
+  const p = "/tmp/last-failed.png";
+  if (!fs.existsSync(p)) {
+    return res.status(404).send("No screenshot found yet");
+  }
+  res.sendFile(path.resolve(p));
 });
 
 app.listen(PORT, "0.0.0.0", () => {

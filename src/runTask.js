@@ -219,6 +219,7 @@ async function openBestEvent(page, targetDate, targetTime, targetName = "", debu
 
   // Click the primary link/button inside the modal that navigates to edit form
   await clickModalPrimary(page, { timeout: 25000 });
+
   return true;
 }
 
@@ -379,11 +380,16 @@ export async function runTask(input = {}) {
     console.log(msg);
     return { message: msg };
   } catch (err) {
-    if (debug) {
-      const p = `/tmp/failed-${Date.now()}.png`;
-      await page.screenshot({ path: p, fullPage: true }).catch(() => {});
+    // Always take a screenshot for debugging
+    const p = "/tmp/last-failed.png"; // fixed path so we can serve it
+    try {
+      await page.screenshot({ path: p, fullPage: true });
       console.log("Saved debug screenshot:", p);
+    } catch (sErr) {
+      console.error("Failed to take screenshot:", sErr);
     }
+
+    // rethrow error to be caught by server.js
     throw err;
   } finally {
     await page.close().catch(() => {});
