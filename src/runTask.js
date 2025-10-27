@@ -16,6 +16,7 @@ const TIMEOUT = 10000; // generic waits
 
 /** ---------- Small utils ---------- */
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function toMinutes(t) {
   if (!t) return null;
@@ -93,7 +94,7 @@ async function clickReliable(page, selector, { nav = false, timeout = 20000, ret
       return; // success
     } catch (e) {
       if (i === retries) throw new Error(`Click failed for "${selector}": ${e.message}`);
-      await page.waitForTimeout(300 + i * 250);
+      await delay(300 + i * 250);
     }
   }
 }
