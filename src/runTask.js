@@ -1,37 +1,38 @@
 // src/runTask.js
 import puppeteer from "puppeteer";
 
-/** ---------- Config & defaults ---------- */
+/* =========================
+   Config / defaults
+   ========================= */
 const DEFAULTS = {
   email: "hola@pontepila.com",
   password: "fitpass2025",
-  targetDate: "2025-10-28",  // YYYY-MM-DD
-  targetTime: "08:00",       // HH:mm (24h) or "8:00 am"
-  targetName: "",            // optional class name
+  targetDate: "2025-10-28",   // YYYY-MM-DD
+  targetTime: "08:00",        // HH:mm (24h) or "8:00 am"
+  targetName: "",             // optional filter
   newCapacity: 4,
-  strictRequireName: true,
+  strictRequireName: true,    // (kept for future use)
   debug: false,
 };
-const TIMEOUT = 10000; // generic waits
-
-/** ---------- Small utils ---------- */
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const TIMEOUT = 10000;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* =========================
+   Small utils
+   ========================= */
 function toMinutes(t) {
   if (!t) return null;
   const s = String(t).trim().toLowerCase()
     .replace(/a\s*\.?\s*m\.?/g, "am").replace(/p\s*\.?\s*m\.?/g, "pm");
-  // accept "08:00", "8:00 am", "8.00am"
   const m = s.match(/(\d{1,2})[:\.](\d{2})\s*(am|pm)?/i);
   if (!m) return null;
   let h = parseInt(m[1], 10);
   const min = parseInt(m[2], 10);
   const ap = (m[3] || "").toLowerCase();
   if (ap) {
-    const isPM = ap === "pm";
-    if (h === 12 && !isPM) h = 0;
-    if (h !== 12 && isPM) h += 12;
+    const pm = ap === "pm";
+    if (h === 12 && !pm) h = 0;
+    if (h !== 12 && pm) h += 12;
   }
   return h * 60 + min;
 }
@@ -45,14 +46,18 @@ function extractStartTimeMinutes(text) {
   return toMinutes(`${hh}:${mm}${ap ? " " + ap : ""}`);
 }
 
-/** ---------- Debug hooks ---------- */
+/* =========================
+   Debug hooks
+   ========================= */
 function attachPageDebug(page) {
-  page.on("console", m => console.log("PAGE:", m.text()));
-  page.on("requestfailed", r => console.log("REQ FAIL:", r.url(), r.failure()?.errorText));
-  page.on("pageerror", e => console.log("PAGEERROR:", e.message));
+  page.on("console", (m) => console.log("PAGE:", m.text()));
+  page.on("requestfailed", (r) => console.log("REQ FAIL:", r.url(), r.failure()?.errorText));
+  page.on("pageerror", (e) => console.log("PAGEERROR:", e.message));
 }
 
-/** ---------- Click reliability ---------- */
+/* =========================
+   Click reliability
+   ========================= */
 const OVERLAYS = [
   ".modal-backdrop.show",
   ".spinner-border", ".spinner-grow",
@@ -61,7 +66,7 @@ const OVERLAYS = [
 ];
 async function waitForNoOverlay(page, timeout = 15000) {
   await page.waitForFunction(
-    sels => !sels.some(sel => document.querySelector(sel)),
+    (sels) => !sels.some((sel) => document.querySelector(sel)),
     { timeout },
     OVERLAYS
   ).catch(() => {});
@@ -72,8 +77,8 @@ async function clickReliable(page, selector, { nav = false, timeout = 20000, ret
     try {
       await waitForNoOverlay(page, timeout);
       const handle = await page.waitForSelector(selector, { visible: true, timeout });
-      await page.evaluate(el => el.scrollIntoView({ block: "center", inline: "center" }), handle);
-      await page.waitForFunction(el => {
+      await page.evaluate((el) => el.scrollIntoView({ block: "center", inline: "center" }), handle);
+      await page.waitForFunction((el) => {
         if (!el || !el.isConnected) return false;
         const s = getComputedStyle(el);
         if (s.display === "none" || s.visibility !== "visible" || s.pointerEvents === "none") return false;
@@ -85,7 +90,7 @@ async function clickReliable(page, selector, { nav = false, timeout = 20000, ret
 
       if (nav) {
         await Promise.all([
-          page.waitForNavigation({ waitUntil: "networkidle0", timeout }),
+          page.waitForNavigation({ waitUntil: "networkidle2", timeout }),
           handle.click({ delay: 20 }),
         ]);
       } else {
@@ -99,12 +104,49 @@ async function clickReliable(page, selector, { nav = false, timeout = 20000, ret
   }
 }
 
-/** ---------- Calendar helpers ---------- */
+/* =========================
+   Modal action by text (EDITAR CLASE)
+   ========================= */
+async function clickModalButtonByText(page, texts, { timeout = 30000 } = {}) {
+  const norm = (s) =>
+    (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const wanted = texts.map(norm);
 
+  const modalSel = "#schedule_modal_container, .modal.show, .modal[style*='display: block']";
+  const modal = await page.waitForSelector(modalSel, { visible: true, timeout });
+
+  const clicked = await page.evaluate((modalEl, wantedTexts) => {
+    const norm = (s) =>
+      (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+
+    const candidates = Array.from(modalEl.querySelectorAll("button, a")).filter((el) => {
+      const st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility !== "visible" || st.pointerEvents === "none") return false;
+      const t = norm(el.innerText || el.textContent || "");
+      return wantedTexts.some((w) => t.includes(w));
+    });
+
+    const target = candidates[0];
+    if (!target) return false;
+    target.scrollIntoView({ block: "center", behavior: "instant" });
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    return true;
+  }, modal, wanted);
+
+  if (!clicked) throw new Error(`Modal button with text not found: ${texts.join(" | ")}`);
+
+  // best-effort nav wait (some buttons are <button> not <a>)
+  try {
+    await page.waitForNavigation({ waitUntil: "networkidle2", timeout });
+  } catch {}
+}
+
+/* =========================
+   Calendar helpers
+   ========================= */
 async function gotoDate(page, isoDate, debug = false) {
   if (debug) console.log("📅 gotoDate →", isoDate);
 
-  // Try clickable date cells/headers first
   const tryOpen = async () => {
     const sels = [
       `td[data-date="${isoDate}"]`,
@@ -123,6 +165,7 @@ async function gotoDate(page, isoDate, debug = false) {
     }
     return false;
   };
+
   const clickBtn = async (selectors) => {
     for (const s of selectors) {
       const el = await page.$(s);
@@ -188,113 +231,50 @@ async function openBestEvent(page, targetDate, targetTime, targetName = "", debu
   const scored = [];
   for (const ev of events) {
     if (!(await sameDate(ev))) continue;
-    const txt = (await page.evaluate(n => n.textContent || "", ev)).toLowerCase().trim();
+    const txt = (await page.evaluate((n) => n.textContent || "", ev)).toLowerCase().trim();
     const startMins = extractStartTimeMinutes(txt);
     const timeScore = startMins === targetMins ? 100 : (startMins ? Math.max(0, 100 - Math.abs(startMins - targetMins)) : 0);
-    const nameScore = targetName ? (txt.includes(targetName.toLowerCase()) ? 50 : 0) : 50;
+    const nameScore = targetName ? (txt.includes((targetName || "").toLowerCase()) ? 50 : 0) : 50;
     scored.push({ ev, txt, score: timeScore + nameScore });
   }
   scored.sort((a, b) => b.score - a.score);
 
   if (debug) {
     console.log(`🔎 Candidates on ${targetDate} (best first):`);
-    for (const s of scored.slice(0, 6)) console.log("  ·", s.txt.slice(0, 120));
+    for (const s of scored.slice(0, 6)) console.log("  ·", s.txt.slice(0, 140));
   }
 
   const best = scored[0];
   if (!best) return false;
 
-  await best.ev.evaluate(n => n.scrollIntoView({ block: "center" }));
-  // Try a normal click, then a dispatched click as backup
+  await best.ev.evaluate((n) => n.scrollIntoView({ block: "center" }));
   try { await best.ev.click(); } catch {}
   try {
-    await page.evaluate(el => {
-      el.dispatchEvent(new MouseEvent('click', { view: window, bubbles: true, cancelable: true }));
-    }, best.ev);
+    await page.evaluate((el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })), best.ev);
   } catch {}
 
-  // Wait for modal
-  await page.waitForSelector("#schedule_modal_container, .modal", { visible: true, timeout: TIMEOUT }).catch(() => {});
-  await sleep(200);
+  // Wait for modal, let animations finish
+  await page.waitForSelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']", { visible: true, timeout: TIMEOUT });
+  await delay(300);
+  await page.waitForFunction(() => {
+    const m = document.querySelector(".modal.show, .modal[style*='display: block']");
+    return !!m && getComputedStyle(m).opacity === "1";
+  }, { timeout: 3000 }).catch(() => {});
 
-  // Click the primary link/button inside the modal that navigates to edit form
-  await clickModalPrimary(page, { timeout: 25000 });
+  // Click by button text (e.g., "EDITAR CLASE")
+  await clickModalButtonByText(page, ["EDITAR CLASE", "Editar clase", "EDITAR", "EDIT"], { timeout: 30000 });
+
+  // Best-effort CSS fallback for blue buttons
+  try {
+    await clickReliable(page, ".modal.show .modal-footer .btn-info, .modal.show .btn-info", { nav: true, timeout: 15000 });
+  } catch {}
 
   return true;
 }
 
-async function clickModalPrimary(page, { timeout = 20000 } = {}) {
-  // Wait for any modal/root we know about
-  const modalSel = "#schedule_modal_container, .modal.show, .modal[style*='display: block']";
-  const modal = await page.waitForSelector(modalSel, { visible: true, timeout });
-
-  // First, try common primary-action selectors
-  const candidates = [
-    // very specific first
-    "#schedule_modal_container a.btn-primary",
-    "#schedule_modal_container button.btn-primary",
-    // general modal primaries
-    ".modal.show a.btn-primary",
-    ".modal.show button.btn-primary",
-    ".modal .modal-footer .btn-primary",
-    // sometimes it's just 'btn' not 'btn-primary'
-    ".modal.show .modal-footer .btn",
-    ".modal.show .btn.btn-primary",
-  ];
-  for (const sel of candidates) {
-    const found = await page.$(sel);
-    if (found) {
-      await clickReliable(page, sel, { nav: true, timeout });
-      return true;
-    }
-  }
-
-  // Fallback: choose by text inside the modal (Editar / Edit / Ver / Detalles)
-  const ok = await page.evaluate(() => {
-    const root =
-      document.querySelector("#schedule_modal_container") ||
-      document.querySelector(".modal.show") ||
-      document.querySelector(".modal[style*='display: block']");
-    if (!root) return false;
-
-    const isPrimary = (el) => {
-      const c = (el.className || "").toLowerCase();
-      return c.includes("btn-primary") || c.includes("btn");
-    };
-
-    const wantsText = (t) => {
-      t = (t || "").toLowerCase();
-      return (
-        t.includes("editar") || t.includes("edit") ||
-        t.includes("ver") || t.includes("detalle") ||
-        t.includes("abrir")
-      );
-    };
-
-    // Prefer buttons/links with "primary-ish" class and good text
-    const els = Array.from(root.querySelectorAll("a, button"));
-    const preferred = els.find((el) => isPrimary(el) && wantsText(el.textContent));
-    const anyPrimary = preferred || els.find(isPrimary) || els[0];
-    if (!anyPrimary) return false;
-
-    anyPrimary.scrollIntoView({ block: "center", behavior: "instant" });
-    anyPrimary.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    return true;
-  });
-
-  if (ok) {
-    // If the JS click triggered nav, wait for it
-    try {
-      await page.waitForNavigation({ waitUntil: "networkidle0", timeout });
-    } catch {}
-    return true;
-  }
-
-  throw new Error("No primary action found in modal.");
-}
-
-
-/** ---------- Main exported runner ---------- */
+/* =========================
+   Main exported runner
+   ========================= */
 export async function runTask(input = {}) {
   const {
     email,
@@ -303,7 +283,7 @@ export async function runTask(input = {}) {
     targetTime,
     targetName,
     newCapacity,
-    strictRequireName,
+    strictRequireName, // unused now
     debug,
   } = { ...DEFAULTS, ...input };
 
@@ -324,26 +304,27 @@ export async function runTask(input = {}) {
   });
 
   const page = await browser.newPage();
-  page.setDefaultTimeout(30000);
+  page.setDefaultTimeout(60000); // colder starts on PaaS
   attachPageDebug(page);
-  await page.emulateTimezone("Europe/Madrid").catch(() => {});
+  await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36");
+  await page.emulateTimezone("America/Mexico_City").catch(() => {});
 
   try {
-    /** 1) Login */
+    /* 1) Login */
     await page.goto("https://admin2.fitpass.com/sessions/new", { waitUntil: "domcontentloaded" });
     await page.waitForSelector("#login_user_email", { visible: true, timeout: TIMEOUT });
     await page.type("#login_user_email", email, { delay: 20 });
     await page.click("#login_user_password");
     await page.type("#login_user_password", password, { delay: 20 });
     await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle0", timeout: 20000 }).catch(() => {}),
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {}),
       clickReliable(page, "#new_login_user button"),
     ]);
 
-    /** 2) Go to Calendar */
+    /* 2) Go to Calendar */
     const calendarSelectors = [
       '#sidebar a[href*="calendar"]',
-      '#sidebar a:nth-of-type(3)'
+      '#sidebar a:nth-of-type(3)',
     ];
     let clicked = false;
     for (const sel of calendarSelectors) {
@@ -352,44 +333,60 @@ export async function runTask(input = {}) {
     if (!clicked) throw new Error("Could not navigate to calendar; menu/link not found.");
     await page.waitForNetworkIdle({ idleTime: 600, timeout: 15000 }).catch(() => {});
 
-    /** 3) Pick date */
+    /* 3) Select date */
     await gotoDate(page, targetDate, debug);
 
-    /** 4) Open correct event (by time/name) */
+    /* 4) Open correct event and enter edit */
     const opened = await openBestEvent(page, targetDate, targetTime, targetName, debug);
-    if (!opened) throw new Error(`No matching event found for ${targetDate} at ${targetTime}${targetName ? ` ("${targetName}")` : ""}.`);
+    if (!opened) throw new Error(`No matching event for ${targetDate} at ${targetTime}${targetName ? ` ("${targetName}")` : ""}.`);
 
-    /** 5) Set capacity */
+    /* 5) Arrived at edit form → set capacity */
+    await page.waitForSelector("#schedule_lesson_availability, form[action*='schedules']", { visible: true, timeout: 20000 });
     await page.waitForSelector("#schedule_lesson_availability", { visible: true, timeout: TIMEOUT });
     await page.click("#schedule_lesson_availability", { clickCount: 3 }).catch(() => {});
     await page.type("#schedule_lesson_availability", String(newCapacity), { delay: 15 });
 
-    /** 6) Save */
+    /* 6) Save */
     await clickReliable(page, 'footer button[type="submit"], footer > div:nth-of-type(1) button');
     await page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {});
 
-    /** 7) “Editar solo esta clase” (first button in the confirmation area) */
+    /* 7) “Editar solo esta clase” (confirmation) */
     try {
-      await clickReliable(page, "div.text-start button");
-      await page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {});
+      await clickModalButtonByText(page, [
+        "EDITAR SOLO ESTA CLASE",
+        "Editar solo esta clase",
+        "SOLO ESTA CLASE",
+        "EDITAR"
+      ], { timeout: 20000 });
     } catch {
-      throw new Error('Could not find or click "Editar solo esta clase" button.');
+      await page.evaluate(() => {
+        const modal = document.querySelector(".modal.show, .modal[style*='display: block']") || document;
+        const btns = Array.from(modal.querySelectorAll(".modal-footer button, .modal-footer a, button, a")).filter((el) => {
+          const s = getComputedStyle(el);
+          return s.visibility === "visible" && s.display !== "none";
+        });
+        const first = btns[0];
+        if (first) {
+          first.scrollIntoView({ block: "center" });
+          first.click();
+          return true;
+        }
+        return false;
+      });
+      try { await page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }); } catch {}
     }
 
     const msg = `✅ Safe-done: capacity ${newCapacity} on ${targetDate} at ${targetTime}${targetName ? ` for "${targetName}"` : ""}.`;
     console.log(msg);
     return { message: msg };
   } catch (err) {
-    // Always take a screenshot for debugging
-    const p = "/tmp/last-failed.png"; // fixed path so we can serve it
+    const p = "/tmp/last-failed.png";
     try {
       await page.screenshot({ path: p, fullPage: true });
       console.log("Saved debug screenshot:", p);
     } catch (sErr) {
       console.error("Failed to take screenshot:", sErr);
     }
-
-    // rethrow error to be caught by server.js
     throw err;
   } finally {
     await page.close().catch(() => {});
