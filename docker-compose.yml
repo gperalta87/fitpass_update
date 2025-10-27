@@ -1,0 +1,17 @@
+services:
+  web:
+    build: .
+    platform: linux/amd64  # Add this line
+    ports:
+      - "3000:3000"
+    shm_size: "1g"
+    environment:
+      NODE_ENV: production
+      TZ: Europe/Madrid
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    
