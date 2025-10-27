@@ -1,305 +1,237 @@
 // src/runTask.js
 import puppeteer from "puppeteer";
 
-/** ========= DEFAULTS (used if request doesn't send values) ========= **/
+/** ---------- Config & defaults ---------- */
 const DEFAULTS = {
-  EMAIL: "hola@pontepila.com",
-  PASSWORD: "fitpass2025",
-  TARGET_DATE: "2025-10-28",   // YYYY-MM-DD
-  TARGET_TIME: "08:00",        // strict START time
-  TARGET_NAME: "",             // optional class name or ""
-  NEW_CAPACITY: 4,             // integer
-  STRICT_REQUIRE_NAME: true,   // require TARGET_NAME in modal & form
-  DEBUG: false
+  email: "hola@pontepila.com",
+  password: "fitpass2025",
+  targetDate: "2025-10-28",  // YYYY-MM-DD
+  targetTime: "08:00",       // HH:mm (24h) or "8:00 am"
+  targetName: "",            // optional class name
+  newCapacity: 4,
+  strictRequireName: true,
+  debug: false,
 };
-/** ================================================================== **/
+const TIMEOUT = 10000; // generic waits
 
-const TIMEOUT = 5000;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const log = (...args) => console.log(...args);
+/** ---------- Small utils ---------- */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-export async function runTask(body = {}) {
-  const EMAIL = body.email ?? DEFAULTS.EMAIL;
-  const PASSWORD = body.password ?? DEFAULTS.PASSWORD;
-  const TARGET_DATE = body.targetDate ?? DEFAULTS.TARGET_DATE;
-  const TARGET_TIME = body.targetTime ?? DEFAULTS.TARGET_TIME;
-  const TARGET_NAME = body.targetName ?? DEFAULTS.TARGET_NAME;
-  const NEW_CAPACITY = Number.isFinite(+body.newCapacity) ? +body.newCapacity : DEFAULTS.NEW_CAPACITY;
-  const STRICT_REQUIRE_NAME = body.strictRequireName ?? DEFAULTS.STRICT_REQUIRE_NAME;
-  const DEBUG = body.debug ?? DEFAULTS.DEBUG;
-  
+function toMinutes(t) {
+  if (!t) return null;
+  const s = String(t).trim().toLowerCase()
+    .replace(/a\s*\.?\s*m\.?/g, "am").replace(/p\s*\.?\s*m\.?/g, "pm");
+  // accept "08:00", "8:00 am", "8.00am"
+  const m = s.match(/(\d{1,2})[:\.](\d{2})\s*(am|pm)?/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const ap = (m[3] || "").toLowerCase();
+  if (ap) {
+    const isPM = ap === "pm";
+    if (h === 12 && !isPM) h = 0;
+    if (h !== 12 && isPM) h += 12;
+  }
+  return h * 60 + min;
+}
+function extractStartTimeMinutes(text) {
+  const s = String(text || "")
+    .toLowerCase()
+    .replace(/a\s*\.?\s*m\.?/g, "am").replace(/p\s*\.?\s*m\.?/g, "pm");
+  const m = s.match(/(\d{1,2})[:\.](\d{2})\s*(am|pm)?/i);
+  if (!m) return null;
+  const hh = m[1], mm = m[2], ap = m[3] || "";
+  return toMinutes(`${hh}:${mm}${ap ? " " + ap : ""}`);
+}
 
-  const dlog = (...args) => DEBUG && console.log(...args);
+/** ---------- Debug hooks ---------- */
+function attachPageDebug(page) {
+  page.on("console", m => console.log("PAGE:", m.text()));
+  page.on("requestfailed", r => console.log("REQ FAIL:", r.url(), r.failure()?.errorText));
+  page.on("pageerror", e => console.log("PAGEERROR:", e.message));
+}
 
-  function toMinutes(t) {
-    const m = String(t).match(/^\s*(\d{1,2})[:\.](\d{2})\s*(am|pm|a\.?m\.?|p\.?m\.?)?\s*$/i);
-    if (!m) return null;
-    let h = parseInt(m[1], 10);
-    const min = parseInt(m[2], 10);
-    const apRaw = m[3]?.toLowerCase();
-    if (apRaw) {
-      const isPM = /p/.test(apRaw.replace(/\s|\./g, ""));
-      if (h === 12 && !isPM) h = 0;
-      if (h !== 12 && isPM) h += 12;
+/** ---------- Click reliability ---------- */
+const OVERLAYS = [
+  ".modal-backdrop.show",
+  ".spinner-border", ".spinner-grow",
+  "[data-loading='true']",
+  ".loading", ".is-loading"
+];
+async function waitForNoOverlay(page, timeout = 15000) {
+  await page.waitForFunction(
+    sels => !sels.some(sel => document.querySelector(sel)),
+    { timeout },
+    OVERLAYS
+  ).catch(() => {});
+}
+
+async function clickReliable(page, selector, { nav = false, timeout = 20000, retries = 3 } = {}) {
+  for (let i = 1; i <= retries; i++) {
+    try {
+      await waitForNoOverlay(page, timeout);
+      const handle = await page.waitForSelector(selector, { visible: true, timeout });
+      await page.evaluate(el => el.scrollIntoView({ block: "center", inline: "center" }), handle);
+      await page.waitForFunction(el => {
+        if (!el || !el.isConnected) return false;
+        const s = getComputedStyle(el);
+        if (s.display === "none" || s.visibility !== "visible" || s.pointerEvents === "none") return false;
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const top = document.elementFromPoint(cx, cy);
+        return top && (top === el || el.contains(top)) && !el.disabled && el.getAttribute("aria-disabled") !== "true";
+      }, { timeout }, handle);
+
+      if (nav) {
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: "networkidle0", timeout }),
+          handle.click({ delay: 20 }),
+        ]);
+      } else {
+        await handle.click({ delay: 20 });
+      }
+      return; // success
+    } catch (e) {
+      if (i === retries) throw new Error(`Click failed for "${selector}": ${e.message}`);
+      await page.waitForTimeout(300 + i * 250);
     }
-    return h * 60 + min;
   }
+}
 
-  function normalizeTimeTokens(txt) {
-    return String(txt).toLowerCase()
-      .replace(/a\s*\.?\s*m\.?/gi, "am")
-      .replace(/p\s*\.?\s*m\.?/gi, "pm");
-  }
+/** ---------- Calendar helpers ---------- */
+async function gotoDate(page, isoDate, debug = false) {
+  if (debug) console.log("📅 gotoDate →", isoDate);
 
-  function extractStartTimeMinutes(txt) {
-    const norm = normalizeTimeTokens(txt);
-    const m = norm.match(/(\d{1,2})[:\.](\d{2})\s*(am|pm)?/i);
-    if (!m) return null;
-    const hh = m[1], mm = m[2], ap = m[3] || "";
-    return toMinutes(`${hh}:${mm}${ap ? " " + ap : ""}`);
-  }
-
-  async function gotoDate(page, isoDate) {
-    dlog("📅 gotoDate →", isoDate);
-
-    const dateInputs = [
-      'input[type="date"]', 'input[name="date"]',
-      'input[aria-label*="fecha" i]', 'input[placeholder*="fecha" i]',
+  // Try clickable date cells/headers first
+  const tryOpen = async () => {
+    const sels = [
+      `td[data-date="${isoDate}"]`,
+      `a[data-navlink="${isoDate}"]`,
+      `.fc-col-header [data-date="${isoDate}"] a`,
+      `.fc-daygrid-day[data-date="${isoDate}"] a`,
     ];
-    for (const sel of dateInputs) {
-      const exists = await page.$(sel);
-      if (exists) {
-        dlog("  Using date input:", sel);
-        await page.evaluate((selector, value) => {
-          const inp = document.querySelector(selector);
-          if (!inp) return;
-          inp.value = value;
-          inp.dispatchEvent(new Event("input", { bubbles: true }));
-          inp.dispatchEvent(new Event("change", { bubbles: true }));
-        }, sel, isoDate);
-        await page.waitForNetworkIdle({ idleTime: 500, timeout: 8000 }).catch(() => {});
+    for (const s of sels) {
+      const el = await page.$(s);
+      if (el) {
+        if (debug) console.log("  Clicking date element:", s);
+        await el.click().catch(() => {});
+        await page.waitForNetworkIdle({ idleTime: 400, timeout: 8000 }).catch(() => {});
         return true;
       }
     }
-
-    const tryOpen = async () => {
-      const sels = [
-        `td[data-date="${isoDate}"]`,
-        `a[data-navlink="${isoDate}"]`,
-        `th[data-date="${isoDate}"] a`,
-        `.fc-col-header [data-date="${isoDate}"] a`,
-      ];
-      for (const s of sels) {
-        const el = await page.$(s);
-        if (el) {
-          dlog("  Clicking date element:", s);
-          await el.click();
-          await page.waitForNetworkIdle({ idleTime: 400, timeout: 8000 }).catch(() => {});
-          return true;
-        }
-      }
-      return false;
-    };
-
-    const clickBtn = async (selectors) => {
-      for (const s of selectors) {
-        const btn = await page.$(s);
-        if (btn) {
-          dlog("  Nav button:", s);
-          await btn.click();
-          await page.waitForNetworkIdle({ idleTime: 300, timeout: 8000 }).catch(() => {});
-          return true;
-        }
-      }
-      return false;
-    };
-
-    if (await tryOpen()) return true;
-
-    for (let i = 0; i < 24; i++) {
-      const moved = await clickBtn([
-        ".fc-next-button", 'button[title="Next"]',
-        'button[aria-label*="Next" i]', '#calendar .fc-toolbar .fc-next-button',
-      ]);
-      if (!moved) break;
-      if (await tryOpen()) return true;
-    }
-    for (let i = 0; i < 24; i++) {
-      const moved = await clickBtn([
-        ".fc-prev-button", 'button[title="Prev"]',
-        'button[aria-label*="Prev" i]', '#calendar .fc-toolbar .fc-prev-button',
-      ]);
-      if (!moved) break;
-      if (await tryOpen()) return true;
-    }
-
-    throw new Error(`Could not navigate calendar to ${isoDate}.`);
-  }
-
-  async function closeModalIfOpen(page) {
-    const safeCloseSelectors = [
-      '#schedule_modal_container button.close',
-      '#schedule_modal_container [data-bs-dismiss="modal"]',
-      '.modal [data-bs-dismiss="modal"]',
-      '.modal .btn-close',
-    ];
-    for (const sel of safeCloseSelectors) {
-      const el = await page.$(sel);
+    return false;
+  };
+  const clickBtn = async (selectors) => {
+    for (const s of selectors) {
+      const el = await page.$(s);
       if (el) {
-        const text = (await page.evaluate(el => el.textContent || '', el)).toLowerCase().trim();
-        if (text.includes('cancelar clase') || text.includes('eliminar') || text.includes('borrar') ||
-            text.includes('delete') || text.includes('remove')) {
-          dlog("  Skipping potentially destructive button:", text);
-          continue;
-        }
-        dlog("  Closing modal via safe selector:", sel);
-        await el.click();
-        await page.waitForNetworkIdle({ idleTime: 200, timeout: 4000 }).catch(() => {});
-        return;
+        if (debug) console.log("  Nav button:", s);
+        await el.click().catch(() => {});
+        await page.waitForNetworkIdle({ idleTime: 300, timeout: 8000 }).catch(() => {});
+        return true;
       }
     }
-    dlog("  Closing modal via Escape (safe method)");
-    await page.keyboard.press('Escape').catch(() => {});
-    await sleep(200);
-  }
+    return false;
+  };
 
-  async function modalMatchesTarget(page) {
-    await page.waitForSelector("#schedule_modal_container, .modal", { visible: true, timeout: TIMEOUT });
-    await sleep(500);
-    const raw = await page.evaluate(() => {
-      const n = document.querySelector("#schedule_modal_container") || document.querySelector(".modal");
-      return (n?.innerText || "");
-    });
-    const txt = normalizeTimeTokens(raw);
-    const startMins = extractStartTimeMinutes(txt);
-    const targetMins = toMinutes(TARGET_TIME);
-    const timeOK = (startMins === targetMins);
-    const nameOK = TARGET_NAME ? txt.toLowerCase().includes(TARGET_NAME.toLowerCase()) : true;
+  if (await tryOpen()) return true;
 
-    const isCreateModal = !txt.includes("hora de la clase") && !txt.includes("fecha de inicio") &&
-                         (txt.includes("disciplina") || txt.includes("cupo fitpass"));
-
-    if (isCreateModal) {
-      dlog("  [Modal check] Detected create new class modal - skipping");
-      return false;
-    }
-    return (STRICT_REQUIRE_NAME ? (timeOK && nameOK) : (timeOK && nameOK));
-  }
-
-  async function formMatchesTarget(page) {
-    const selectorCandidates = [
-      '[id^="schedule_form_"]', 'form[action*="schedules"]',
-      '#schedule_modal_container form', '.modal form', 'form',
-    ];
-    let raw = "";
-    for (const sel of selectorCandidates) {
-      const el = await page.$(sel);
-      if (el) {
-        raw = await page.evaluate((node) => node.innerText || "", el);
-        if (raw) break;
-      }
-    }
-    const txt = normalizeTimeTokens(raw);
-    const startMins = extractStartTimeMinutes(txt);
-    const targetMins = toMinutes(TARGET_TIME);
-    const timeOK = (startMins === targetMins);
-    const nameOK = TARGET_NAME ? txt.toLowerCase().includes(TARGET_NAME.toLowerCase()) : true;
-
-    const pageTxt = normalizeTimeTokens(await page.evaluate(() => document.body.innerText || ""));
-    const dateOK = pageTxt.includes(TARGET_DATE);
-
-    dlog("  [Form check] timeOK:", timeOK, "| nameOK:", nameOK, "| dateOK:", dateOK);
-    return (STRICT_REQUIRE_NAME ? (timeOK && nameOK) : (timeOK && nameOK)) && dateOK;
-  }
-
-  async function openCorrectEvent(page) {
-    dlog("  [Event Discovery] Starting to look for events...");
-    await page.waitForSelector(".fc-event, .fc-daygrid-event, .fc-timegrid-event", {
-      visible: true, timeout: TIMEOUT,
-    });
-    dlog("  [Event Discovery] Found events, proceeding...");
-
-    const events = await page.$$(
-      ".fc-timegrid-event, .fc-daygrid-event, .fc-event, a.fc-event, a.fc-daygrid-event"
-    );
-
-    const sameDate = async (el) => {
-      return await page.evaluate((node, d) => {
-        if (node.closest?.(`[data-date="${d}"]`)) return true;
-        let n = node;
-        while (n && n !== document.documentElement) {
-          if (n.getAttribute) {
-            const dd = n.getAttribute("data-date");
-            if (dd === d) return true;
-            const nav = n.getAttribute("data-navlink");
-            if (nav === d) return true;
-          }
-          n = n.parentNode;
-        }
-        return false;
-      }, el, TARGET_DATE);
-    };
-
-    const targetMins = toMinutes(TARGET_TIME);
-    const dateEvents = [];
-    for (const ev of events) {
-      if (!(await sameDate(ev))) continue;
-      const txt = (await page.evaluate((n) => n.textContent || "", ev)).toLowerCase();
-      dateEvents.push({ ev, preview: txt.trim().replace(/\s+/g, " ").slice(0, 160) });
-    }
-
-    if (DEBUG) {
-      console.log(`🔎 Candidates on ${TARGET_DATE} (best first):`);
-    }
-
-    const scoredEvents = dateEvents.map(({ ev, preview }) => {
-      const txt = preview.toLowerCase();
-      const startMins = extractStartTimeMinutes(txt);
-      const timeScore = startMins === targetMins ? 100 : (startMins ? Math.max(0, 100 - Math.abs(startMins - targetMins)) : 0);
-      const nameScore = TARGET_NAME ? (txt.includes(TARGET_NAME.toLowerCase()) ? 50 : 0) : 50;
-      const totalScore = timeScore + nameScore;
-      return { ev, preview, score: totalScore, startMins };
-    });
-
-    scoredEvents.sort((a, b) => b.score - a.score);
-
-    const bestEvent = scoredEvents[0];
-    if (!bestEvent) {
-      log("⚠️ No events found to score.");
-      return false;
-    }
-
-    await bestEvent.ev.evaluate((n) => n.scrollIntoView({ block: "center", behavior: "instant" }));
-
-    // Try both click paths
-    try { await bestEvent.ev.click(); } catch {}
-    try {
-      await page.evaluate((element) => {
-        element.dispatchEvent(new MouseEvent('click', { view: window, bubbles: true, cancelable: true }));
-      }, bestEvent.ev);
-    } catch {}
-
-    await sleep(100);
-
-    const okModal = await modalMatchesTarget(page);
-    if (!okModal) {
-      dlog("  ✖ Modal mismatch — closing and trying next.");
-      await closeModalIfOpen(page);
-      await sleep(200);
-      return false;
-    }
-
-    await page.waitForSelector("#schedule_modal_container a.btn-primary, .modal a.btn-primary", {
-      visible: true, timeout: TIMEOUT,
-    });
-
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle0", timeout: 15000 }).catch(() => {}),
-      page.click("#schedule_modal_container a.btn-primary, .modal a.btn-primary"),
+  for (let i = 0; i < 24; i++) {
+    const moved = await clickBtn([
+      ".fc-next-button", 'button[title="Next"]',
+      'button[aria-label*="Next" i]', '#calendar .fc-toolbar .fc-next-button',
     ]);
-
-    return true;
+    if (!moved) break;
+    if (await tryOpen()) return true;
   }
+  for (let i = 0; i < 24; i++) {
+    const moved = await clickBtn([
+      ".fc-prev-button", 'button[title="Prev"]',
+      'button[aria-label*="Prev" i]', '#calendar .fc-toolbar .fc-prev-button',
+    ]);
+    if (!moved) break;
+    if (await tryOpen()) return true;
+  }
+
+  throw new Error(`Could not navigate calendar to ${isoDate}.`);
+}
+
+async function openBestEvent(page, targetDate, targetTime, targetName = "", debug = false) {
+  await page.waitForSelector(".fc-event, .fc-daygrid-event, .fc-timegrid-event, a.fc-event", {
+    visible: true, timeout: TIMEOUT,
+  });
+
+  const targetMins = toMinutes(targetTime);
+  const events = await page.$$(
+    ".fc-timegrid-event, .fc-daygrid-event, .fc-event, a.fc-event, a.fc-daygrid-event"
+  );
+
+  const sameDate = async (el) => {
+    return await page.evaluate((node, d) => {
+      if (node.closest?.(`[data-date="${d}"]`)) return true;
+      let n = node;
+      while (n && n !== document.documentElement) {
+        if (n.getAttribute) {
+          const dd = n.getAttribute("data-date");
+          if (dd === d) return true;
+          const nav = n.getAttribute("data-navlink");
+          if (nav === d) return true;
+        }
+        n = n.parentNode;
+      }
+      return false;
+    }, el, targetDate);
+  };
+
+  const scored = [];
+  for (const ev of events) {
+    if (!(await sameDate(ev))) continue;
+    const txt = (await page.evaluate(n => n.textContent || "", ev)).toLowerCase().trim();
+    const startMins = extractStartTimeMinutes(txt);
+    const timeScore = startMins === targetMins ? 100 : (startMins ? Math.max(0, 100 - Math.abs(startMins - targetMins)) : 0);
+    const nameScore = targetName ? (txt.includes(targetName.toLowerCase()) ? 50 : 0) : 50;
+    scored.push({ ev, txt, score: timeScore + nameScore });
+  }
+  scored.sort((a, b) => b.score - a.score);
+
+  if (debug) {
+    console.log(`🔎 Candidates on ${targetDate} (best first):`);
+    for (const s of scored.slice(0, 6)) console.log("  ·", s.txt.slice(0, 120));
+  }
+
+  const best = scored[0];
+  if (!best) return false;
+
+  await best.ev.evaluate(n => n.scrollIntoView({ block: "center" }));
+  // Try a normal click, then a dispatched click as backup
+  try { await best.ev.click(); } catch {}
+  try {
+    await page.evaluate(el => {
+      el.dispatchEvent(new MouseEvent('click', { view: window, bubbles: true, cancelable: true }));
+    }, best.ev);
+  } catch {}
+
+  // Wait for modal
+  await page.waitForSelector("#schedule_modal_container, .modal", { visible: true, timeout: TIMEOUT }).catch(() => {});
+  await sleep(200);
+
+  // Click the primary link/button inside the modal that navigates to edit form
+  await clickReliable(page, '#schedule_modal_container a.btn-primary, .modal a.btn-primary', { nav: true });
+  return true;
+}
+
+/** ---------- Main exported runner ---------- */
+export async function runTask(input = {}) {
+  const {
+    email,
+    password,
+    targetDate,
+    targetTime,
+    targetName,
+    newCapacity,
+    strictRequireName,
+    debug,
+  } = { ...DEFAULTS, ...input };
 
   const browser = await puppeteer.launch({
     headless: true,
@@ -307,70 +239,79 @@ export async function runTask(body = {}) {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
+      "--single-process",
+      "--no-zygote",
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-features=IsolateOrigins,site-per-process",
     ],
     defaultViewport: { width: 1280, height: 900 },
   });
 
   const page = await browser.newPage();
-  page.setDefaultTimeout(TIMEOUT);
+  page.setDefaultTimeout(30000);
+  attachPageDebug(page);
   await page.emulateTimezone("Europe/Madrid").catch(() => {});
 
   try {
-    // 1) Login
+    /** 1) Login */
     await page.goto("https://admin2.fitpass.com/sessions/new", { waitUntil: "domcontentloaded" });
-    await page.waitForSelector("#login_user_email", { visible: true });
-    await page.type("#login_user_email", EMAIL, { delay: 25 });
+    await page.waitForSelector("#login_user_email", { visible: true, timeout: TIMEOUT });
+    await page.type("#login_user_email", email, { delay: 20 });
     await page.click("#login_user_password");
-    await page.type("#login_user_password", PASSWORD, { delay: 25 });
+    await page.type("#login_user_password", password, { delay: 20 });
     await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle0", timeout: 15000 }),
-      page.click("#new_login_user button"),
+      page.waitForNavigation({ waitUntil: "networkidle0", timeout: 20000 }).catch(() => {}),
+      clickReliable(page, "#new_login_user button"),
     ]);
 
-    // 2) Calendar
-    try {
-      await page.waitForSelector('#sidebar a[href*="calendar"]', { timeout: 3000 });
-      await page.click('#sidebar a[href*="calendar"]');
-    } catch {
-      await page.click("#sidebar a:nth-of-type(3)");
+    /** 2) Go to Calendar */
+    const calendarSelectors = [
+      '#sidebar a[href*="calendar"]',
+      '#sidebar a:nth-of-type(3)'
+    ];
+    let clicked = false;
+    for (const sel of calendarSelectors) {
+      try { await clickReliable(page, sel); clicked = true; break; } catch {}
     }
-    await page.waitForNetworkIdle({ idleTime: 500, timeout: 15000 }).catch(() => {});
+    if (!clicked) throw new Error("Could not navigate to calendar; menu/link not found.");
+    await page.waitForNetworkIdle({ idleTime: 600, timeout: 15000 }).catch(() => {});
 
-    // 3) Date
-    await gotoDate(page, TARGET_DATE);
+    /** 3) Pick date */
+    await gotoDate(page, targetDate, debug);
 
-    // 4) Open correct event
-    const opened = await openCorrectEvent(page);
-    if (!opened) throw new Error(`Aborting: no matching event for ${TARGET_DATE} at "${TARGET_TIME}"${TARGET_NAME ? ` with "${TARGET_NAME}"` : ""}.`);
+    /** 4) Open correct event (by time/name) */
+    const opened = await openBestEvent(page, targetDate, targetTime, targetName, debug);
+    if (!opened) throw new Error(`No matching event found for ${targetDate} at ${targetTime}${targetName ? ` ("${targetName}")` : ""}.`);
 
-    // 5) Set capacity
+    /** 5) Set capacity */
     await page.waitForSelector("#schedule_lesson_availability", { visible: true, timeout: TIMEOUT });
-    await page.click("#schedule_lesson_availability", { clickCount: 3 });
-    await page.type("#schedule_lesson_availability", String(NEW_CAPACITY), { delay: 20 });
+    await page.click("#schedule_lesson_availability", { clickCount: 3 }).catch(() => {});
+    await page.type("#schedule_lesson_availability", String(newCapacity), { delay: 15 });
 
-    // 6) Save
-    await page.waitForSelector('footer button[type="submit"], footer > div:nth-of-type(1) button', {
-      visible: true, timeout: TIMEOUT,
-    });
-    await Promise.all([
-      page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {}),
-      page.click('footer button[type="submit"], footer > div:nth-of-type(1) button'),
-    ]);
+    /** 6) Save */
+    await clickReliable(page, 'footer button[type="submit"], footer > div:nth-of-type(1) button');
+    await page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {});
 
-    // 7) “Editar solo esta clase”
-    const buttons = await page.$$("div.text-start button");
-    if (buttons.length) {
-      await Promise.all([
-        page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {}),
-        buttons[0].click(),
-      ]);
-    } else {
-      throw new Error('Could not find "EDITAR SOLO ESTA CLASE" button.');
+    /** 7) “Editar solo esta clase” (first button in the confirmation area) */
+    try {
+      await clickReliable(page, "div.text-start button");
+      await page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {});
+    } catch {
+      throw new Error('Could not find or click "Editar solo esta clase" button.');
     }
 
-    const msg = `✅ Safe-done: capacity ${NEW_CAPACITY} on ${TARGET_DATE} at ${TARGET_TIME}${TARGET_NAME ? ` for "${TARGET_NAME}"` : ""}.`;
+    const msg = `✅ Safe-done: capacity ${newCapacity} on ${targetDate} at ${targetTime}${targetName ? ` for "${targetName}"` : ""}.`;
     console.log(msg);
     return { message: msg };
+  } catch (err) {
+    if (debug) {
+      const p = `/tmp/failed-${Date.now()}.png`;
+      await page.screenshot({ path: p, fullPage: true }).catch(() => {});
+      console.log("Saved debug screenshot:", p);
+    }
+    throw err;
   } finally {
     await page.close().catch(() => {});
     await browser.close().catch(() => {});
