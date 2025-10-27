@@ -217,29 +217,10 @@ async function openBestEvent(page, targetDate, targetTime, targetName = "", debu
   await page.waitForSelector("#schedule_modal_container, .modal", { visible: true, timeout: TIMEOUT }).catch(() => {});
   await sleep(200);
 
-  // new: match the blue button text
-  await clickModalButtonByText(page, ["EDITAR CLASE", "EDITAR", "EDIT"], { timeout: 30000 });
+  // Click the primary link/button inside the modal that navigates to edit form
+  await clickModalPrimary(page, { timeout: 25000 });
+
   return true;
-}
-try {
-  await clickModalButtonByText(page, ["EDITAR CLASE", "EDITAR", "EDIT"], { timeout: 30000 });
-} catch {
-  // Fallback: click the last visible .btn in the modal footer
-  await page.evaluate(() => {
-    const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
-    if (!modal) return false;
-    const footer = modal.querySelector(".modal-footer") || modal;
-    const btns = Array.from(footer.querySelectorAll("button, a")).filter(el => {
-      const s = getComputedStyle(el);
-      return s.visibility === "visible" && s.display !== "none";
-    });
-    const last = btns[btns.length - 1];
-    if (!last) return false;
-    last.scrollIntoView({ block: "center" });
-    last.click();
-    return true;
-  });
-  try { await page.waitForNavigation({ waitUntil: "networkidle0", timeout: 15000 }); } catch {}
 }
 
 async function clickModalPrimary(page, { timeout = 20000 } = {}) {
@@ -310,48 +291,6 @@ async function clickModalPrimary(page, { timeout = 20000 } = {}) {
   }
 
   throw new Error("No primary action found in modal.");
-}
-
-// Click a <button> or <a> inside the current modal by visible text
-async function clickModalButtonByText(page, texts, { timeout = 25000 } = {}) {
-  // Normalize strings (remove accents, lowercase)
-  const norm = (s) => s
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // strip accents
-    .toLowerCase().trim();
-
-  const wanted = texts.map(norm);
-
-  // Wait for a visible modal root
-  const modalSel = "#schedule_modal_container, .modal.show, .modal[style*='display: block']";
-  const modal = await page.waitForSelector(modalSel, { visible: true, timeout });
-  // Try querying by text in the browser context
-  const clicked = await page.evaluate((modalEl, wantedTexts) => {
-    const norm = (s) => (s || "")
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase().trim();
-
-    const candidates = Array.from(
-      modalEl.querySelectorAll("button, a")
-    ).filter(el => {
-      const style = getComputedStyle(el);
-      if (style.display === "none" || style.visibility !== "visible" || style.pointerEvents === "none") return false;
-      const t = norm(el.innerText || el.textContent || "");
-      return wantedTexts.some(w => t.includes(w));
-    });
-
-    const target = candidates[0];
-    if (!target) return false;
-    target.scrollIntoView({ block: "center", behavior: "instant" });
-    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    return true;
-  }, modal, wanted);
-
-  if (!clicked) throw new Error(`Modal button with text not found: ${texts.join(" | ")}`);
-
-  // If the click triggers navigation, wait for it (best effort)
-  try {
-    await page.waitForNavigation({ waitUntil: "networkidle0", timeout });
-  } catch {}
 }
 
 
