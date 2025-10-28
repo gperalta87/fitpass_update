@@ -253,6 +253,37 @@ async function openBestEvent(page, targetDate, targetTime, targetName = "", debu
     await page.evaluate((el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })), best.ev);
   } catch {}
 
+  // Click a visible <button> or <input type=submit> by text (optionally scoped)
+async function clickButtonByText(page, texts, { timeout = 30000, scope = "document" } = {}) {
+  const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const wanted = texts.map(norm);
+
+  const handle = scope === "document"
+    ? null
+    : await page.$(scope);
+
+  const clicked = await page.evaluate((root, wantedTexts) => {
+    const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    const R = root || document;
+    const candidates = Array.from(
+      R.querySelectorAll('button, input[type="submit"], a[role="button"]')
+    ).filter(el => {
+      const st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility !== "visible" || st.pointerEvents === "none") return false;
+      const t = norm(el.innerText || el.value || el.textContent || "");
+      return wantedTexts.some(w => t.includes(w));
+    });
+    const target = candidates[0];
+    if (!target) return false;
+    target.scrollIntoView({ block: "center" });
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    return true;
+  }, handle, wanted);
+
+  if (!clicked) throw new Error(`Button with text not found: ${texts.join(" | ")}`);
+  try { await page.waitForNavigation({ waitUntil: "networkidle2", timeout }); } catch {}
+}
+
   // Wait for modal, let animations finish
   await page.waitForSelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']", { visible: true, timeout: TIMEOUT });
   await delay(300);
@@ -347,8 +378,33 @@ export async function runTask(input = {}) {
     await page.type("#schedule_lesson_availability", String(newCapacity), { delay: 15 });
 
     /* 6) Save */
-    await clickReliable(page, 'footer button[type="submit"], footer > div:nth-of-type(1) button');
-    await page.waitForNetworkIdle({ idleTime: 800, timeout: 15000 }).catch(() => {});
+    // 6) Save (text-first, then CSS fallbacks)
+    try {
+      await clickButtonByText(page, ["GUARDAR", "Guardar", "ACTUALIZAR", "Actualizar", "EDITAR", "Editar", "Save", "Update"], {
+        timeout: 30000,
+        scope: "form" // prioritize the edit form area
+      });
+    } catch {
+      // CSS fallbacks commonly used by Bootstrap-themed forms
+      const fallbacks = [
+        'form button[type="submit"]',
+        'form input[type="submit"]',
+        'form .btn-primary',
+        'form .btn-success',
+        '.content button[type="submit"]',
+      ];
+      let done = false;
+      for (const sel of fallbacks) {
+        try {
+          await clickReliable(page, sel, { nav: true, timeout: 20000 });
+          done = true;
+          break;
+        } catch {}
+      }
+      if (!done) throw new Error("Could not find a Save/Submit button on the edit form.");
+    }
+    // allow the form submit to settle
+    await page.waitForNetworkIdle({ idleTime: 1000, timeout: 20000 }).catch(() => {});
 
     /* 7) “Editar solo esta clase” (confirmation) */
     try {
