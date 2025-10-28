@@ -200,6 +200,39 @@ async function gotoDate(page, isoDate, debug = false) {
 
   throw new Error(`Could not navigate calendar to ${isoDate}.`);
 }
+// Explicitly handle the blue "EDITAR CLASE" button inside the modal
+async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
+  console.log("Trying to click EDITAR CLASE button...");
+
+  // Wait for the modal to appear and finish its animation
+  await page.waitForSelector(
+    "#schedule_modal_container, .modal.show, .modal[style*='display: block']",
+    { visible: true, timeout }
+  );
+  await delay(400);
+
+  // Look specifically for the blue .btn-info button
+  const selector = ".modal.show .btn-info, #schedule_modal_container .btn-info";
+  await page.waitForSelector(selector, { visible: true, timeout });
+
+  // Scroll into view and click via JS to bypass z-index issues
+  await page.evaluate((sel) => {
+    const btn = document.querySelector(sel);
+    if (!btn) return false;
+    btn.scrollIntoView({ block: "center", behavior: "instant" });
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    return true;
+  }, selector);
+
+  // Wait for navigation to the edit form
+  try {
+    await page.waitForNavigation({ waitUntil: "networkidle2", timeout });
+  } catch (e) {
+    console.warn("Navigation after EDITAR CLASE click took longer:", e.message);
+  }
+
+  console.log("Clicked EDITAR CLASE, should be on edit form now.");
+}
 
 async function openBestEvent(page, targetDate, targetTime, targetName = "", debug = false) {
   await page.waitForSelector(".fc-event, .fc-daygrid-event, .fc-timegrid-event, a.fc-event", {
@@ -292,13 +325,10 @@ async function clickButtonByText(page, texts, { timeout = 30000, scope = "docume
     return !!m && getComputedStyle(m).opacity === "1";
   }, { timeout: 3000 }).catch(() => {});
 
-  // Click by button text (e.g., "EDITAR CLASE")
-  await clickModalButtonByText(page, ["EDITAR CLASE", "Editar clase", "EDITAR", "EDIT"], { timeout: 30000 });
 
-  // Best-effort CSS fallback for blue buttons
-  try {
-    await clickReliable(page, ".modal.show .modal-footer .btn-info, .modal.show .btn-info", { nav: true, timeout: 15000 });
-  } catch {}
+  // Click the visible blue "EDITAR CLASE" button
+  await clickEditarClaseButton(page, { timeout: 30000 });
+
 
   return true;
 }
