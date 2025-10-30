@@ -209,26 +209,113 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
     "#schedule_modal_container, .modal.show, .modal[style*='display: block']",
     { visible: true, timeout }
   );
-  await delay(400);
+  await delay(600); // Increased delay for modal animations
 
-  // Look specifically for the blue .btn-info button
-  const selector = ".modal.show .btn-info, #schedule_modal_container .btn-info";
-  await page.waitForSelector(selector, { visible: true, timeout });
-
-  // Scroll into view and click via JS to bypass z-index issues
-  await page.evaluate((sel) => {
-    const btn = document.querySelector(sel);
-    if (!btn) return false;
+  // Try multiple strategies to find and click the button
+  const clicked = await page.evaluate(() => {
+    // Normalize text for comparison
+    const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    
+    // Find the modal first
+    const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
+    if (!modal) return false;
+    
+    // Strategy 1: Find by class .btn-info in modal
+    let btn = modal.querySelector(".btn-info");
+    
+    // Strategy 2: Find by text content "EDITAR CLASE"
+    if (!btn) {
+      const allButtons = Array.from(modal.querySelectorAll("button, a, .btn"));
+      btn = allButtons.find(el => {
+        const text = norm(el.innerText || el.textContent || "");
+        return text.includes("editar clase") || text.includes("editarclase");
+      });
+    }
+    
+    // Strategy 3: Find button with pencil icon (common pattern)
+    if (!btn) {
+      const allButtons = Array.from(modal.querySelectorAll("button, a, .btn"));
+      btn = allButtons.find(el => {
+        const html = el.innerHTML || "";
+        return (html.includes("pencil") || html.includes("edit") || el.querySelector("i[class*='pencil'], i[class*='edit']")) &&
+               norm(el.innerText || el.textContent || "").includes("editar");
+      });
+    }
+    
+    // Strategy 4: Find by button position (typically right side, blue/teal colored)
+    if (!btn) {
+      const allButtons = Array.from(modal.querySelectorAll("button, a.btn, .btn"));
+      btn = allButtons.find(el => {
+        const style = getComputedStyle(el);
+        const bgColor = style.backgroundColor;
+        // Look for blue/teal buttons (common for edit buttons)
+        const isBlueTeal = bgColor.includes("rgb(13, 202, 240)") || // Bootstrap btn-info
+                           bgColor.includes("rgb(23, 162, 184)") ||
+                           bgColor.includes("teal") ||
+                           bgColor.includes("cyan") ||
+                           el.classList.contains("btn-info") ||
+                           el.classList.contains("btn-primary");
+        return isBlueTeal && style.display !== "none" && style.visibility !== "hidden";
+      });
+    }
+    
+    if (!btn) {
+      console.log("EDITAR CLASE button not found. Available buttons:", 
+        Array.from(modal.querySelectorAll("button, a")).map(b => b.textContent?.trim()).filter(Boolean)
+      );
+      return false;
+    }
+    
+    // Check if button is actually clickable
+    const style = getComputedStyle(btn);
+    if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") {
+      return false;
+    }
+    
+    // Scroll into view and click
     btn.scrollIntoView({ block: "center", behavior: "instant" });
-    btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    setTimeout(() => {}, 100); // Small delay for scroll
+    
+    // Try multiple click methods
+    try {
+      btn.click();
+    } catch (e) {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    }
+    
     return true;
-  }, selector);
+  });
+
+  if (!clicked) {
+    // Fallback: try using the clickModalButtonByText function
+    console.log("Direct button click failed. Trying text-based search...");
+    try {
+      await clickModalButtonByText(page, ["EDITAR CLASE", "EDITAR", "Editar Clase"], { timeout: 10000 });
+      return; // Success
+    } catch (e) {
+      console.error("Text-based click also failed:", e.message);
+      throw new Error(`Could not find or click EDITAR CLASE button: ${e.message}`);
+    }
+  }
 
   // Wait for navigation to the edit form
+  console.log("EDITAR CLASE button clicked, waiting for navigation...");
   try {
     await page.waitForNavigation({ waitUntil: "networkidle2", timeout });
   } catch (e) {
-    console.warn("Navigation after EDITAR CLASE click took longer:", e.message);
+    // Check if we're already on the edit page
+    const isEditPage = await page.evaluate(() => {
+      return document.querySelector("#schedule_lesson_availability") !== null ||
+             document.querySelector("form[action*='schedules']") !== null ||
+             window.location.href.includes("edit") ||
+             window.location.href.includes("schedules");
+    });
+    
+    if (!isEditPage) {
+      console.warn("Navigation after EDITAR CLASE click took longer:", e.message);
+      // Give it a bit more time
+      await delay(1000);
+    }
   }
 
   console.log("Clicked EDITAR CLASE, should be on edit form now.");
