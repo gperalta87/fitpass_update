@@ -254,11 +254,35 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
       return form.action;
     }
     
-    // Strategy 5: Look for any links or buttons with edit-related URLs
+    // Strategy 5: Look for the EDITAR CLASE link specifically (the actual button)
+    // Priority: Look for btn-primary with "EDITAR CLASE" text - this is the correct button
     const allLinks = Array.from(modal.querySelectorAll('a, button'));
     for (const link of allLinks) {
-      const href = link.href || link.getAttribute('data-url') || link.getAttribute('data-href');
-      if (href && (href.includes('edit') || href.includes('schedules'))) {
+      const text = (link.textContent || "").toLowerCase().trim();
+      const hasBtnPrimary = link.classList.contains('btn-primary');
+      // Prioritize buttons with btn-primary class and "EDITAR CLASE" text
+      if ((text.includes("editar clase") || (text.includes("editar") && hasBtnPrimary))) {
+        const href = link.href || link.getAttribute('href') || link.getAttribute('data-url') || link.getAttribute('data-href');
+        if (href && href.includes('/edit') && !href.includes('cancel') && !href.includes('delete')) {
+          // Convert relative URL to absolute if needed
+          if (href.startsWith('/')) {
+            const fullUrl = window.location.origin + href;
+            console.log("Found EDITAR CLASE link (btn-primary):", fullUrl);
+            return fullUrl;
+          }
+          console.log("Found EDITAR CLASE link (btn-primary):", href);
+          return href;
+        }
+      }
+    }
+    
+    // Strategy 6: Fallback - look for any links with edit URLs
+    for (const link of allLinks) {
+      const href = link.href || link.getAttribute('href') || link.getAttribute('data-url') || link.getAttribute('data-href');
+      if (href && (href.includes('/edit') && !href.includes('cancel') && !href.includes('delete'))) {
+        if (href.startsWith('/')) {
+          return window.location.origin + href;
+        }
         return href;
       }
     }
@@ -267,14 +291,56 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
   });
 
   if (editUrl) {
-    console.log("Found edit URL, navigating directly:", editUrl);
-    try {
-      await page.goto(editUrl, { waitUntil: "networkidle2", timeout: 30000 });
-      console.log("Direct navigation to edit page succeeded");
-      return;
-    } catch (e) {
-      console.log("Direct navigation failed, falling back to button click:", e.message);
+    // Build safe candidate URLs (avoid cancel/destroy endpoints and prefer /edit)
+    const sanitized = String(editUrl);
+    const badFragments = ["ask_to_cancel", "cancel", "destroy", "delete"];
+    const isBad = badFragments.some((f) => sanitized.includes(f));
+
+    // Try to extract schedule id if present
+    const idMatch = sanitized.match(/schedules\/(\d+)/);
+    const scheduleId = idMatch ? idMatch[1] : null;
+
+    const origin = new URL(await page.url()).origin;
+    const candidates = [];
+    if (!isBad) candidates.push(sanitized);
+    if (scheduleId) {
+      candidates.push(`${origin}/schedules/${scheduleId}/edit`);
+      candidates.push(`${origin}/calendars/schedules/${scheduleId}/edit`);
     }
+
+    // Some backends require specific headers for HTML responses
+    await page.setExtraHTTPHeaders({
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7",
+    }).catch(() => {});
+
+    // Helper to validate we're on the edit page
+    const isOnEditPage = async () => {
+      try {
+        return await page.evaluate(() => {
+          const hasField = document.querySelector('#schedule_lesson_availability');
+          const hasForm = document.querySelector('form[action*="schedules"]');
+          const url = window.location.href;
+          return !!(hasField || hasForm || url.includes('/edit'));
+        });
+      } catch { return false; }
+    };
+
+    for (const url of candidates) {
+      try {
+        console.log("Trying candidate edit URL:", url);
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        // Give the app a moment to finish any client nav
+        await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
+        if (await isOnEditPage()) {
+          console.log("Direct navigation to edit page succeeded via:", url);
+          return;
+        }
+      } catch (e) {
+        console.log("Candidate URL failed:", url, e.message);
+      }
+    }
+    console.log("No candidate edit URL worked; will try button click approach.");
   }
 
   // Fallback: Try to click the button with a different approach
@@ -315,11 +381,13 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
     const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
     if (!modal) return false;
     
-    // Find the EDITAR CLASE button
+    // Find the EDITAR CLASE button - prioritize btn-primary with /edit href
     const buttons = Array.from(modal.querySelectorAll("button, a, .btn"));
     const editButton = buttons.find(btn => {
       const text = (btn.textContent || "").toLowerCase().trim();
-      return text.includes("editar clase") || text.includes("editar");
+      const href = btn.href || btn.getAttribute('href');
+      return (text.includes("editar clase") || (text.includes("editar") && btn.classList.contains('btn-primary'))) &&
+             href && href.includes('/edit');
     });
     
     if (!editButton) {
