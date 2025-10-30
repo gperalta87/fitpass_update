@@ -274,47 +274,147 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
     
     // Scroll into view and click
     btn.scrollIntoView({ block: "center", behavior: "instant" });
-    setTimeout(() => {}, 100); // Small delay for scroll
     
-    // Try multiple click methods
+    // Wait a bit for scroll to complete
+    setTimeout(() => {}, 200);
+    
+    // Try multiple click methods with better debugging
+    console.log("Attempting to click button:", btn.textContent?.trim(), btn.className);
+    
+    let clickSuccess = false;
+    
+    // Method 1: Direct click
     try {
       btn.click();
+      clickSuccess = true;
+      console.log("Direct click succeeded");
     } catch (e) {
-      btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      console.log("Direct click failed:", e.message);
+    }
+    
+    // Method 2: Mouse event
+    if (!clickSuccess) {
+      try {
+        btn.dispatchEvent(new MouseEvent("click", { 
+          bubbles: true, 
+          cancelable: true, 
+          view: window,
+          button: 0,
+          buttons: 1
+        }));
+        clickSuccess = true;
+        console.log("Mouse event click succeeded");
+      } catch (e) {
+        console.log("Mouse event click failed:", e.message);
+      }
+    }
+    
+    // Method 3: Focus and Enter key
+    if (!clickSuccess) {
+      try {
+        btn.focus();
+        btn.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter" }));
+        btn.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter" }));
+        clickSuccess = true;
+        console.log("Keyboard click succeeded");
+      } catch (e) {
+        console.log("Keyboard click failed:", e.message);
+      }
+    }
+    
+    // Method 4: Force click with mousedown/mouseup
+    if (!clickSuccess) {
+      try {
+        btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+        btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        clickSuccess = true;
+        console.log("Force click succeeded");
+      } catch (e) {
+        console.log("Force click failed:", e.message);
+      }
+    }
+    
+    if (!clickSuccess) {
+      console.log("All click methods failed");
+      return false;
     }
     
     return true;
   });
 
   if (!clicked) {
-    // Fallback: try using the clickModalButtonByText function
-    console.log("Direct button click failed. Trying text-based search...");
+    // Fallback 1: Try using Puppeteer's native click method
+    console.log("JavaScript click failed. Trying Puppeteer native click...");
     try {
-      await clickModalButtonByText(page, ["EDITAR CLASE", "EDITAR", "Editar Clase"], { timeout: 10000 });
-      return; // Success
+      const buttonElement = await page.$(".modal.show .btn-info, #schedule_modal_container .btn-info, .modal button:contains('EDITAR CLASE'), .modal button:contains('EDITAR')");
+      if (buttonElement) {
+        await buttonElement.click();
+        console.log("Puppeteer native click succeeded");
+        clicked = true;
+      }
     } catch (e) {
-      console.error("Text-based click also failed:", e.message);
-      throw new Error(`Could not find or click EDITAR CLASE button: ${e.message}`);
+      console.log("Puppeteer native click failed:", e.message);
+    }
+    
+    // Fallback 2: Try using the clickModalButtonByText function
+    if (!clicked) {
+      console.log("Puppeteer click failed. Trying text-based search...");
+      try {
+        await clickModalButtonByText(page, ["EDITAR CLASE", "EDITAR", "Editar Clase"], { timeout: 10000 });
+        clicked = true;
+      } catch (e) {
+        console.error("Text-based click also failed:", e.message);
+        throw new Error(`Could not find or click EDITAR CLASE button: ${e.message}`);
+      }
     }
   }
 
   // Wait for navigation to the edit form
   console.log("EDITAR CLASE button clicked, waiting for navigation...");
-  try {
-    await page.waitForNavigation({ waitUntil: "networkidle2", timeout });
-  } catch (e) {
-    // Check if we're already on the edit page
-    const isEditPage = await page.evaluate(() => {
-      return document.querySelector("#schedule_lesson_availability") !== null ||
-             document.querySelector("form[action*='schedules']") !== null ||
-             window.location.href.includes("edit") ||
-             window.location.href.includes("schedules");
-    });
-    
-    if (!isEditPage) {
-      console.warn("Navigation after EDITAR CLASE click took longer:", e.message);
-      // Give it a bit more time
-      await delay(1000);
+  
+  // Wait a bit for any immediate response
+  await delay(1000);
+  
+  // Check if we're already on the edit page
+  let isEditPage = await page.evaluate(() => {
+    return document.querySelector("#schedule_lesson_availability") !== null ||
+           document.querySelector("form[action*='schedules']") !== null ||
+           window.location.href.includes("edit") ||
+           window.location.href.includes("schedules");
+  });
+  
+  if (isEditPage) {
+    console.log("Already on edit page, no navigation needed");
+  } else {
+    console.log("Not on edit page yet, waiting for navigation...");
+    try {
+      await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 });
+      console.log("Navigation completed");
+    } catch (e) {
+      console.warn("Navigation timeout, checking current page state...");
+      
+      // Check again if we're on the edit page
+      isEditPage = await page.evaluate(() => {
+        return document.querySelector("#schedule_lesson_availability") !== null ||
+               document.querySelector("form[action*='schedules']") !== null ||
+               window.location.href.includes("edit") ||
+               window.location.href.includes("schedules");
+      });
+      
+      if (!isEditPage) {
+        // Check if modal is still open (click didn't work)
+        const modalStillOpen = await page.evaluate(() => {
+          const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
+          return modal !== null && getComputedStyle(modal).display !== "none";
+        });
+        
+        if (modalStillOpen) {
+          throw new Error("Modal is still open - EDITAR CLASE button click may not have worked");
+        } else {
+          throw new Error("Navigation failed and not on edit page - unknown state");
+        }
+      }
     }
   }
 
