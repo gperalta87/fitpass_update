@@ -612,10 +612,63 @@ export async function runTask(input = {}) {
     if (!opened) throw new Error(`No matching event for ${targetDate} at ${targetTime}${targetName ? ` ("${targetName}")` : ""}.`);
 
     /* 5) Arrived at edit form → set capacity */
-    await page.waitForSelector("#schedule_lesson_availability, form[action*='schedules']", { visible: true, timeout: 20000 });
-    await page.waitForSelector("#schedule_lesson_availability", { visible: true, timeout: TIMEOUT });
-    await page.click("#schedule_lesson_availability", { clickCount: 3 }).catch(() => {});
-    await page.type("#schedule_lesson_availability", String(newCapacity), { delay: 15 });
+    console.log("Waiting for edit form to load...");
+    
+    // Wait a bit for Turbo/JS to finish loading the form
+    await delay(1000);
+    
+    // Check what's actually on the page for debugging
+    const pageInfo = await page.evaluate(() => {
+      return {
+        url: window.location.href,
+        hasScheduleField: !!document.querySelector("#schedule_lesson_availability"),
+        hasForm: !!document.querySelector("form[action*='schedules']"),
+        allInputs: Array.from(document.querySelectorAll("input")).map(inp => ({
+          id: inp.id,
+          name: inp.name,
+          type: inp.type,
+          value: inp.value
+        })),
+        formActions: Array.from(document.querySelectorAll("form")).map(f => f.action)
+      };
+    });
+    console.log("Page info after navigation:", JSON.stringify(pageInfo, null, 2));
+    
+    // Try multiple selectors to find the capacity field
+    const capacitySelectors = [
+      "#schedule_lesson_availability",
+      "input[name*='availability']",
+      "input[name*='capacity']",
+      "input[name*='cupo']",
+      "select[name*='availability']",
+      "select[name*='capacity']",
+      "#schedule_capacity",
+      ".form-group input[type='number']",
+      "form input[type='number']"
+    ];
+    
+    let capacityField = null;
+    for (const selector of capacitySelectors) {
+      try {
+        await page.waitForSelector(selector, { visible: true, timeout: 5000 });
+        capacityField = await page.$(selector);
+        if (capacityField) {
+          console.log(`Found capacity field with selector: ${selector}`);
+          break;
+        }
+      } catch (e) {
+        // Try next selector
+      }
+    }
+    
+    if (!capacityField) {
+      throw new Error(`Could not find capacity field on edit page. Available inputs: ${JSON.stringify(pageInfo.allInputs)}`);
+    }
+    
+    // Clear and set the capacity
+    await capacityField.click({ clickCount: 3 }).catch(() => {});
+    await capacityField.type(String(newCapacity), { delay: 15 });
+    console.log(`Set capacity to: ${newCapacity}`);
 
     /* 6) Save */
     // 6) Save (text-first, then CSS fallbacks)
