@@ -200,225 +200,185 @@ async function gotoDate(page, isoDate, debug = false) {
 
   throw new Error(`Could not navigate calendar to ${isoDate}.`);
 }
-// Explicitly handle the blue "EDITAR CLASE" button inside the modal
+// Try to extract the edit URL from the modal or page, then navigate directly
 async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
-  console.log("Trying to click EDITAR CLASE button...");
+  console.log("Trying to find EDITAR CLASE button and extract edit URL...");
 
   // Wait for the modal to appear and finish its animation
   await page.waitForSelector(
     "#schedule_modal_container, .modal.show, .modal[style*='display: block']",
     { visible: true, timeout }
   );
-  await delay(600); // Increased delay for modal animations
+  await delay(600);
 
-  // Try multiple strategies to find and click the button
-  const clicked = await page.evaluate(() => {
-    // Normalize text for comparison
-    const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
-    
-    // Find the modal first
+  // First, try to extract the edit URL from the page
+  const editUrl = await page.evaluate(() => {
+    // Look for edit URLs in various places
     const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
-    if (!modal) return false;
+    if (!modal) return null;
     
-    // Strategy 1: Find by class .btn-info in modal
-    let btn = modal.querySelector(".btn-info");
-    
-    // Strategy 2: Find by text content "EDITAR CLASE"
-    if (!btn) {
-      const allButtons = Array.from(modal.querySelectorAll("button, a, .btn"));
-      btn = allButtons.find(el => {
-        const text = norm(el.innerText || el.textContent || "");
-        return text.includes("editar clase") || text.includes("editarclase");
-      });
+    // Strategy 1: Look for edit URLs in data attributes
+    const editLink = modal.querySelector('a[href*="edit"], a[href*="schedules"], button[data-url*="edit"], button[data-href*="edit"]');
+    if (editLink) {
+      return editLink.href || editLink.getAttribute('data-url') || editLink.getAttribute('data-href');
     }
     
-    // Strategy 3: Find button with pencil icon (common pattern)
-    if (!btn) {
-      const allButtons = Array.from(modal.querySelectorAll("button, a, .btn"));
-      btn = allButtons.find(el => {
-        const html = el.innerHTML || "";
-        return (html.includes("pencil") || html.includes("edit") || el.querySelector("i[class*='pencil'], i[class*='edit']")) &&
-               norm(el.innerText || el.textContent || "").includes("editar");
-      });
-    }
-    
-    // Strategy 4: Find by button position (typically right side, blue/teal colored)
-    if (!btn) {
-      const allButtons = Array.from(modal.querySelectorAll("button, a.btn, .btn"));
-      btn = allButtons.find(el => {
-        const style = getComputedStyle(el);
-        const bgColor = style.backgroundColor;
-        // Look for blue/teal buttons (common for edit buttons)
-        const isBlueTeal = bgColor.includes("rgb(13, 202, 240)") || // Bootstrap btn-info
-                           bgColor.includes("rgb(23, 162, 184)") ||
-                           bgColor.includes("teal") ||
-                           bgColor.includes("cyan") ||
-                           el.classList.contains("btn-info") ||
-                           el.classList.contains("btn-primary");
-        return isBlueTeal && style.display !== "none" && style.visibility !== "hidden";
-      });
-    }
-    
-    if (!btn) {
-      console.log("EDITAR CLASE button not found. Available buttons:", 
-        Array.from(modal.querySelectorAll("button, a")).map(b => b.textContent?.trim()).filter(Boolean)
-      );
-      return false;
-    }
-    
-    // Check if button is actually clickable
-    const style = getComputedStyle(btn);
-    if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") {
-      return false;
-    }
-    
-    // Scroll into view and click
-    btn.scrollIntoView({ block: "center", behavior: "instant" });
-    
-    // Wait a bit for scroll to complete
-    setTimeout(() => {}, 200);
-    
-    // Try multiple click methods with better debugging
-    console.log("Attempting to click button:", btn.textContent?.trim(), btn.className);
-    
-    let clickSuccess = false;
-    
-    // Method 1: Direct click
-    try {
-      btn.click();
-      clickSuccess = true;
-      console.log("Direct click succeeded");
-    } catch (e) {
-      console.log("Direct click failed:", e.message);
-    }
-    
-    // Method 2: Mouse event
-    if (!clickSuccess) {
-      try {
-        btn.dispatchEvent(new MouseEvent("click", { 
-          bubbles: true, 
-          cancelable: true, 
-          view: window,
-          button: 0,
-          buttons: 1
-        }));
-        clickSuccess = true;
-        console.log("Mouse event click succeeded");
-      } catch (e) {
-        console.log("Mouse event click failed:", e.message);
+    // Strategy 2: Look for schedule ID in data attributes or hidden inputs
+    const scheduleId = modal.querySelector('[data-schedule-id], [data-id], input[name*="schedule"], input[name*="id"]');
+    if (scheduleId) {
+      const id = scheduleId.getAttribute('data-schedule-id') || 
+                 scheduleId.getAttribute('data-id') || 
+                 scheduleId.value;
+      if (id) {
+        // Try to construct edit URL
+        const baseUrl = window.location.origin;
+        return `${baseUrl}/schedules/${id}/edit`;
       }
     }
     
-    // Method 3: Focus and Enter key
-    if (!clickSuccess) {
-      try {
-        btn.focus();
-        btn.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter" }));
-        btn.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter" }));
-        clickSuccess = true;
-        console.log("Keyboard click succeeded");
-      } catch (e) {
-        console.log("Keyboard click failed:", e.message);
+    // Strategy 3: Look for edit URLs in the page's JavaScript variables
+    const scripts = Array.from(document.querySelectorAll('script'));
+    for (const script of scripts) {
+      const content = script.textContent || '';
+      const editMatch = content.match(/edit[^"']*url[^"']*["']([^"']+)["']/i) || 
+                       content.match(/["']([^"']*edit[^"']*)["']/i) ||
+                       content.match(/["']([^"']*schedules[^"']*edit[^"']*)["']/i);
+      if (editMatch) {
+        return editMatch[1];
       }
     }
     
-    // Method 4: Force click with mousedown/mouseup
-    if (!clickSuccess) {
-      try {
-        btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-        btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-        btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-        clickSuccess = true;
-        console.log("Force click succeeded");
-      } catch (e) {
-        console.log("Force click failed:", e.message);
+    // Strategy 4: Look for form action URLs
+    const form = modal.querySelector('form[action*="edit"], form[action*="schedules"]');
+    if (form) {
+      return form.action;
+    }
+    
+    // Strategy 5: Look for any links or buttons with edit-related URLs
+    const allLinks = Array.from(modal.querySelectorAll('a, button'));
+    for (const link of allLinks) {
+      const href = link.href || link.getAttribute('data-url') || link.getAttribute('data-href');
+      if (href && (href.includes('edit') || href.includes('schedules'))) {
+        return href;
       }
     }
     
-    if (!clickSuccess) {
-      console.log("All click methods failed");
-      return false;
-    }
-    
-    return true;
+    return null;
   });
 
-  if (!clicked) {
-    // Fallback 1: Try using Puppeteer's native click method
-    console.log("JavaScript click failed. Trying Puppeteer native click...");
+  if (editUrl) {
+    console.log("Found edit URL, navigating directly:", editUrl);
     try {
-      const buttonElement = await page.$(".modal.show .btn-info, #schedule_modal_container .btn-info, .modal button:contains('EDITAR CLASE'), .modal button:contains('EDITAR')");
-      if (buttonElement) {
-        await buttonElement.click();
-        console.log("Puppeteer native click succeeded");
-        clicked = true;
-      }
+      await page.goto(editUrl, { waitUntil: "networkidle2", timeout: 30000 });
+      console.log("Direct navigation to edit page succeeded");
+      return;
     } catch (e) {
-      console.log("Puppeteer native click failed:", e.message);
-    }
-    
-    // Fallback 2: Try using the clickModalButtonByText function
-    if (!clicked) {
-      console.log("Puppeteer click failed. Trying text-based search...");
-      try {
-        await clickModalButtonByText(page, ["EDITAR CLASE", "EDITAR", "Editar Clase"], { timeout: 10000 });
-        clicked = true;
-      } catch (e) {
-        console.error("Text-based click also failed:", e.message);
-        throw new Error(`Could not find or click EDITAR CLASE button: ${e.message}`);
-      }
+      console.log("Direct navigation failed, falling back to button click:", e.message);
     }
   }
 
-  // Wait for navigation to the edit form
-  console.log("EDITAR CLASE button clicked, waiting for navigation...");
+  // Fallback: Try to click the button with a different approach
+  console.log("No edit URL found, trying button click approach...");
   
-  // Wait a bit for any immediate response
-  await delay(1000);
+  // Debug: Log all available information from the modal
+  await page.evaluate(() => {
+    const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
+    if (!modal) {
+      console.log("Modal not found for debugging");
+      return;
+    }
+    
+    console.log("=== MODAL DEBUG INFO ===");
+    console.log("Modal HTML:", modal.outerHTML.substring(0, 500) + "...");
+    console.log("All buttons:", Array.from(modal.querySelectorAll("button, a")).map(b => ({
+      text: b.textContent?.trim(),
+      className: b.className,
+      href: b.href,
+      onclick: b.getAttribute('onclick'),
+      dataUrl: b.getAttribute('data-url'),
+      dataHref: b.getAttribute('data-href')
+    })));
+    console.log("All data attributes:", Array.from(modal.querySelectorAll('[data-*]')).map(el => ({
+      tag: el.tagName,
+      attributes: Array.from(el.attributes).filter(attr => attr.name.startsWith('data-')).map(attr => `${attr.name}="${attr.value}"`)
+    })));
+    console.log("All forms:", Array.from(modal.querySelectorAll('form')).map(f => ({
+      action: f.action,
+      method: f.method,
+      innerHTML: f.innerHTML.substring(0, 200) + "..."
+    })));
+    console.log("=== END DEBUG INFO ===");
+  });
   
-  // Check if we're already on the edit page
-  let isEditPage = await page.evaluate(() => {
+  // Try to find and click the button using a more robust method
+  const buttonFound = await page.evaluate(() => {
+    const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
+    if (!modal) return false;
+    
+    // Find the EDITAR CLASE button
+    const buttons = Array.from(modal.querySelectorAll("button, a, .btn"));
+    const editButton = buttons.find(btn => {
+      const text = (btn.textContent || "").toLowerCase().trim();
+      return text.includes("editar clase") || text.includes("editar");
+    });
+    
+    if (!editButton) {
+      console.log("EDITAR CLASE button not found");
+      return false;
+    }
+    
+    console.log("Found EDITAR CLASE button:", editButton.textContent?.trim());
+    
+    // Try to trigger the click event
+    try {
+      // First, try to get the onclick handler
+      const onclick = editButton.getAttribute('onclick');
+      if (onclick) {
+        console.log("Button has onclick handler:", onclick);
+        eval(onclick);
+        return true;
+      }
+      
+      // Try different click methods
+      editButton.click();
+      return true;
+    } catch (e) {
+      console.log("Button click failed:", e.message);
+      return false;
+    }
+  });
+
+  if (!buttonFound) {
+    throw new Error("Could not find or click EDITAR CLASE button");
+  }
+
+  // Wait for navigation or page change
+  console.log("Button clicked, waiting for page change...");
+  await delay(2000);
+  
+  // Check if we're on the edit page
+  const isEditPage = await page.evaluate(() => {
     return document.querySelector("#schedule_lesson_availability") !== null ||
            document.querySelector("form[action*='schedules']") !== null ||
            window.location.href.includes("edit") ||
            window.location.href.includes("schedules");
   });
   
-  if (isEditPage) {
-    console.log("Already on edit page, no navigation needed");
-  } else {
-    console.log("Not on edit page yet, waiting for navigation...");
-    try {
-      await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 });
-      console.log("Navigation completed");
-    } catch (e) {
-      console.warn("Navigation timeout, checking current page state...");
-      
-      // Check again if we're on the edit page
-      isEditPage = await page.evaluate(() => {
-        return document.querySelector("#schedule_lesson_availability") !== null ||
-               document.querySelector("form[action*='schedules']") !== null ||
-               window.location.href.includes("edit") ||
-               window.location.href.includes("schedules");
-      });
-      
-      if (!isEditPage) {
-        // Check if modal is still open (click didn't work)
-        const modalStillOpen = await page.evaluate(() => {
-          const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
-          return modal !== null && getComputedStyle(modal).display !== "none";
-        });
-        
-        if (modalStillOpen) {
-          throw new Error("Modal is still open - EDITAR CLASE button click may not have worked");
-        } else {
-          throw new Error("Navigation failed and not on edit page - unknown state");
-        }
-      }
+  if (!isEditPage) {
+    // Check if modal is still open
+    const modalStillOpen = await page.evaluate(() => {
+      const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
+      return modal !== null && getComputedStyle(modal).display !== "none";
+    });
+    
+    if (modalStillOpen) {
+      throw new Error("Modal is still open - EDITAR CLASE button click did not work");
+    } else {
+      throw new Error("Navigation failed - not on edit page and modal is closed");
     }
   }
 
-  console.log("Clicked EDITAR CLASE, should be on edit form now.");
+  console.log("Successfully navigated to edit page");
 }
 
 // Click a visible <button> or <input type=submit> by text (optionally scoped)
