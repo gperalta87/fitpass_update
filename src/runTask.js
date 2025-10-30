@@ -290,94 +290,9 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
     return null;
   });
 
-  if (editUrl) {
-    // Build safe candidate URLs (avoid cancel/destroy endpoints and prefer /edit)
-    const sanitized = String(editUrl);
-    const badFragments = ["ask_to_cancel", "cancel", "destroy", "delete"];
-    const isBad = badFragments.some((f) => sanitized.includes(f));
-
-    // Try to extract schedule id if present
-    const idMatch = sanitized.match(/schedules\/(\d+)/);
-    const scheduleId = idMatch ? idMatch[1] : null;
-
-    const origin = new URL(await page.url()).origin;
-    const candidates = [];
-    
-    // PRIORITY 1: Use the extracted URL first (it's from the actual button, so it's correct)
-    if (!isBad && sanitized) {
-      // Make sure it's an absolute URL
-      if (sanitized.startsWith('/')) {
-        candidates.push(origin + sanitized);
-      } else if (sanitized.startsWith('http')) {
-        candidates.push(sanitized);
-      }
-    }
-    
-    // PRIORITY 2: Try constructed URLs with calendar prefix first (more likely to be correct)
-    if (scheduleId) {
-      candidates.push(`${origin}/calendars/schedules/${scheduleId}/edit`);
-      // Only try without calendars prefix as last resort
-      candidates.push(`${origin}/schedules/${scheduleId}/edit`);
-    }
-
-    // Some backends require specific headers for HTML responses
-    await page.setExtraHTTPHeaders({
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7",
-    }).catch(() => {});
-
-    // Helper to validate we're on the edit page
-    const isOnEditPage = async () => {
-      try {
-        return await page.evaluate(() => {
-          const hasField = document.querySelector('#schedule_lesson_availability');
-          const hasForm = document.querySelector('form[action*="schedules"]');
-          const url = window.location.href;
-          return !!(hasField || hasForm || url.includes('/edit'));
-        });
-      } catch { return false; }
-    };
-
-    for (const url of candidates) {
-      try {
-        console.log("Trying candidate edit URL:", url);
-        
-        // Check for 404 before navigating
-        const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-        
-        // If we got a 404, skip this URL and try next one
-        if (response && response.status() === 404) {
-          console.log("Got 404 for URL, trying next candidate:", url);
-          continue;
-        }
-        
-        // Give the app a moment to finish any client nav
-        await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
-        
-        // Check if we're actually on the edit page
-        if (await isOnEditPage()) {
-          console.log("Direct navigation to edit page succeeded via:", url);
-          return;
-        } else {
-          console.log("Navigation succeeded but not on edit page. Current URL:", await page.url());
-          // If we got redirected to 404 page or wrong page, continue to next candidate
-          const currentUrl = await page.url();
-          if (currentUrl.includes('404') || currentUrl.includes('not_found')) {
-            console.log("Detected 404 page, trying next candidate");
-            continue;
-          }
-        }
-      } catch (e) {
-        // Check if error is due to 404
-        if (e.message && (e.message.includes('404') || e.message.includes('Not Found'))) {
-          console.log("Got 404 error for URL, trying next candidate:", url);
-          continue;
-        }
-        console.log("Candidate URL failed:", url, e.message);
-      }
-    }
-    console.log("No candidate edit URL worked; will try button click approach.");
-  }
+  // Don't try direct navigation - Turbo links must be clicked, not navigated to directly
+  // The URL requires specific headers/context that only the button click provides
+  console.log("Edit URL found, but will click button instead (Turbo link requires click, not direct navigation)");
 
   // Fallback: Try to click the button with a different approach
   console.log("No edit URL found, trying button click approach...");
@@ -412,47 +327,92 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
     console.log("=== END DEBUG INFO ===");
   });
   
-  // Try to find and click the button using a more robust method
-  const buttonFound = await page.evaluate(() => {
-    const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
-    if (!modal) return false;
-    
-    // Find the EDITAR CLASE button - prioritize btn-primary with /edit href
-    const buttons = Array.from(modal.querySelectorAll("button, a, .btn"));
-    const editButton = buttons.find(btn => {
-      const text = (btn.textContent || "").toLowerCase().trim();
-      const href = btn.href || btn.getAttribute('href');
-      return (text.includes("editar clase") || (text.includes("editar") && btn.classList.contains('btn-primary'))) &&
-             href && href.includes('/edit');
-    });
-    
-    if (!editButton) {
-      console.log("EDITAR CLASE button not found");
-      return false;
-    }
-    
-    console.log("Found EDITAR CLASE button:", editButton.textContent?.trim());
-    
-    // Try to trigger the click event
+  // Try using Puppeteer's selector to find and click the button (works better with Turbo)
+  let buttonClicked = false;
+  
+  // Wait for the modal and button to be ready
+  await page.waitForSelector(
+    "#schedule_modal_container, .modal.show, .modal[style*='display: block']",
+    { visible: true, timeout: 10000 }
+  );
+  await delay(300);
+  
+  // Try multiple selectors to find the EDITAR CLASE button
+  const selectors = [
+    'a.btn-primary[href*="/edit"]',  // Primary button with edit href
+    'a[href*="/edit"].btn-primary',  // Link with edit and btn-primary  
+    'a.btn-primary[href*="schedules"][href*="edit"]',  // Full path
+  ];
+  
+  for (const selector of selectors) {
     try {
-      // First, try to get the onclick handler
-      const onclick = editButton.getAttribute('onclick');
-      if (onclick) {
-        console.log("Button has onclick handler:", onclick);
-        eval(onclick);
-        return true;
+      console.log(`Trying selector: ${selector}`);
+      const button = await page.$(selector);
+      if (button) {
+        const isVisible = await button.evaluate(el => {
+          const style = getComputedStyle(el);
+          return style.display !== 'none' && style.visibility !== 'hidden' && style.pointerEvents !== 'none';
+        });
+        
+        if (isVisible) {
+          console.log(`Found visible EDITAR CLASE button with selector: ${selector}`);
+          // Scroll into view
+          await button.evaluate(el => el.scrollIntoView({ block: "center", behavior: "smooth" }));
+          await delay(400);
+          
+          // Click and wait for navigation (Turbo handles this)
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }).catch(() => {}),
+            page.waitForSelector('#schedule_lesson_availability', { visible: true, timeout: 30000 }).catch(() => {}),
+            button.click({ delay: 100 })
+          ]);
+          
+          console.log("Successfully clicked EDITAR CLASE button");
+          buttonClicked = true;
+          break;
+        }
+      }
+    } catch (e) {
+      console.log(`Selector ${selector} failed:`, e.message);
+    }
+  }
+  
+  // Fallback: Use evaluate if Puppeteer selectors didn't work
+  if (!buttonClicked) {
+    console.log("Puppeteer selectors didn't work, trying evaluate approach...");
+    const buttonFound = await page.evaluate(() => {
+      const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
+      if (!modal) {
+        console.log("Modal not found in evaluate");
+        return false;
       }
       
-      // Try different click methods
+      // Find the EDITAR CLASE button - prioritize btn-primary with /edit href
+      const buttons = Array.from(modal.querySelectorAll("a"));
+      const editButton = buttons.find(btn => {
+        const text = (btn.textContent || "").toLowerCase().trim();
+        const href = btn.href || btn.getAttribute('href');
+        return (text.includes("editar clase") || (text.includes("editar") && btn.classList.contains('btn-primary'))) &&
+               href && href.includes('/edit');
+      });
+      
+      if (!editButton) {
+        console.log("EDITAR CLASE button not found");
+        return false;
+      }
+      
+      console.log("Found EDITAR CLASE button via evaluate:", editButton.textContent?.trim(), editButton.href);
+      
+      // Scroll and click
+      editButton.scrollIntoView({ block: "center", behavior: "instant" });
       editButton.click();
       return true;
-    } catch (e) {
-      console.log("Button click failed:", e.message);
-      return false;
-    }
-  });
+    });
+    
+    buttonClicked = buttonFound;
+  }
 
-  if (!buttonFound) {
+  if (!buttonClicked) {
     throw new Error("Could not find or click EDITAR CLASE button");
   }
 
