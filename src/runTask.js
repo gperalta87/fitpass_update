@@ -292,12 +292,9 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
 
   // Don't try direct navigation - Turbo links must be clicked, not navigated to directly
   // The URL requires specific headers/context that only the button click provides
-  console.log("Edit URL found, but will click button instead (Turbo link requires click, not direct navigation)");
-
-  // Fallback: Try to click the button with a different approach
-  console.log("No edit URL found, trying button click approach...");
+  console.log("Will click button instead of direct navigation (Turbo link requires click)");
   
-  // Debug: Log all available information from the modal
+  // Debug: Log all available information from the modal (only runs if needed for troubleshooting)
   await page.evaluate(() => {
     const modal = document.querySelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']");
     if (!modal) {
@@ -315,7 +312,9 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
       dataUrl: b.getAttribute('data-url'),
       dataHref: b.getAttribute('data-href')
     })));
-    console.log("All data attributes:", Array.from(modal.querySelectorAll('[data-*]')).map(el => ({
+    console.log("All data attributes:", Array.from(modal.querySelectorAll('*')).filter(el => {
+      return Array.from(el.attributes).some(attr => attr.name.startsWith('data-'));
+    }).map(el => ({
       tag: el.tagName,
       attributes: Array.from(el.attributes).filter(attr => attr.name.startsWith('data-')).map(attr => `${attr.name}="${attr.value}"`)
     })));
