@@ -4,7 +4,8 @@
     "type": "module",
     "main": "src/server.js",
     "scripts": {
-      "start": "node src/server.js"
+      "start": "node src/server.js",
+      "test": "node test-runTask.js"
     },
     "dependencies": {
       "body-parser": "^1.20.3",

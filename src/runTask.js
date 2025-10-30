@@ -7,10 +7,10 @@ import puppeteer from "puppeteer";
 const DEFAULTS = {
   email: "hola@pontepila.com",
   password: "fitpass2025",
-  targetDate: "2025-10-28",   // YYYY-MM-DD
+  targetDate: "2025-10-31",   // YYYY-MM-DD
   targetTime: "08:00",        // HH:mm (24h) or "8:00 am"
   targetName: "",             // optional filter
-  newCapacity: 4,
+  newCapacity: 2,
   strictRequireName: true,    // (kept for future use)
   debug: false,
 };
@@ -234,6 +234,37 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
   console.log("Clicked EDITAR CLASE, should be on edit form now.");
 }
 
+// Click a visible <button> or <input type=submit> by text (optionally scoped)
+async function clickButtonByText(page, texts, { timeout = 30000, scope = "document" } = {}) {
+  const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const wanted = texts.map(norm);
+
+  const handle = scope === "document"
+    ? null
+    : await page.$(scope);
+
+  const clicked = await page.evaluate((root, wantedTexts) => {
+    const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    const R = root || document;
+    const candidates = Array.from(
+      R.querySelectorAll('button, input[type="submit"], a[role="button"]')
+    ).filter(el => {
+      const st = getComputedStyle(el);
+      if (st.display === "none" || st.visibility !== "visible" || st.pointerEvents === "none") return false;
+      const t = norm(el.innerText || el.value || el.textContent || "");
+      return wantedTexts.some(w => t.includes(w));
+    });
+    const target = candidates[0];
+    if (!target) return false;
+    target.scrollIntoView({ block: "center" });
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    return true;
+  }, handle, wanted);
+
+  if (!clicked) throw new Error(`Button with text not found: ${texts.join(" | ")}`);
+  try { await page.waitForNavigation({ waitUntil: "networkidle2", timeout }); } catch {}
+}
+
 async function openBestEvent(page, targetDate, targetTime, targetName = "", debug = false) {
   await page.waitForSelector(".fc-event, .fc-daygrid-event, .fc-timegrid-event, a.fc-event", {
     visible: true, timeout: TIMEOUT,
@@ -285,37 +316,6 @@ async function openBestEvent(page, targetDate, targetTime, targetName = "", debu
   try {
     await page.evaluate((el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })), best.ev);
   } catch {}
-
-  // Click a visible <button> or <input type=submit> by text (optionally scoped)
-async function clickButtonByText(page, texts, { timeout = 30000, scope = "document" } = {}) {
-  const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
-  const wanted = texts.map(norm);
-
-  const handle = scope === "document"
-    ? null
-    : await page.$(scope);
-
-  const clicked = await page.evaluate((root, wantedTexts) => {
-    const norm = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
-    const R = root || document;
-    const candidates = Array.from(
-      R.querySelectorAll('button, input[type="submit"], a[role="button"]')
-    ).filter(el => {
-      const st = getComputedStyle(el);
-      if (st.display === "none" || st.visibility !== "visible" || st.pointerEvents === "none") return false;
-      const t = norm(el.innerText || el.value || el.textContent || "");
-      return wantedTexts.some(w => t.includes(w));
-    });
-    const target = candidates[0];
-    if (!target) return false;
-    target.scrollIntoView({ block: "center" });
-    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    return true;
-  }, handle, wanted);
-
-  if (!clicked) throw new Error(`Button with text not found: ${texts.join(" | ")}`);
-  try { await page.waitForNavigation({ waitUntil: "networkidle2", timeout }); } catch {}
-}
 
   // Wait for modal, let animations finish
   await page.waitForSelector("#schedule_modal_container, .modal.show, .modal[style*='display: block']", { visible: true, timeout: TIMEOUT });
