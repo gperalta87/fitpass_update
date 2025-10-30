@@ -302,10 +302,22 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
 
     const origin = new URL(await page.url()).origin;
     const candidates = [];
-    if (!isBad) candidates.push(sanitized);
+    
+    // PRIORITY 1: Use the extracted URL first (it's from the actual button, so it's correct)
+    if (!isBad && sanitized) {
+      // Make sure it's an absolute URL
+      if (sanitized.startsWith('/')) {
+        candidates.push(origin + sanitized);
+      } else if (sanitized.startsWith('http')) {
+        candidates.push(sanitized);
+      }
+    }
+    
+    // PRIORITY 2: Try constructed URLs with calendar prefix first (more likely to be correct)
     if (scheduleId) {
-      candidates.push(`${origin}/schedules/${scheduleId}/edit`);
       candidates.push(`${origin}/calendars/schedules/${scheduleId}/edit`);
+      // Only try without calendars prefix as last resort
+      candidates.push(`${origin}/schedules/${scheduleId}/edit`);
     }
 
     // Some backends require specific headers for HTML responses
@@ -329,14 +341,38 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
     for (const url of candidates) {
       try {
         console.log("Trying candidate edit URL:", url);
-        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        
+        // Check for 404 before navigating
+        const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        
+        // If we got a 404, skip this URL and try next one
+        if (response && response.status() === 404) {
+          console.log("Got 404 for URL, trying next candidate:", url);
+          continue;
+        }
+        
         // Give the app a moment to finish any client nav
         await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => {});
+        
+        // Check if we're actually on the edit page
         if (await isOnEditPage()) {
           console.log("Direct navigation to edit page succeeded via:", url);
           return;
+        } else {
+          console.log("Navigation succeeded but not on edit page. Current URL:", await page.url());
+          // If we got redirected to 404 page or wrong page, continue to next candidate
+          const currentUrl = await page.url();
+          if (currentUrl.includes('404') || currentUrl.includes('not_found')) {
+            console.log("Detected 404 page, trying next candidate");
+            continue;
+          }
         }
       } catch (e) {
+        // Check if error is due to 404
+        if (e.message && (e.message.includes('404') || e.message.includes('Not Found'))) {
+          console.log("Got 404 error for URL, trying next candidate:", url);
+          continue;
+        }
         console.log("Candidate URL failed:", url, e.message);
       }
     }
