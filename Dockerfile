@@ -13,6 +13,7 @@ RUN npm ci --omit=dev
 
 # Copy source
 COPY --chown=pptruser:pptruser src ./src
+COPY --chown=pptruser:pptruser test-runTask.js ./
 
 # Switch to non-root user AFTER everything is copied
 USER pptruser
