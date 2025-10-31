@@ -688,31 +688,86 @@ export async function runTask(input = {}) {
     console.log(`Set capacity to: ${newCapacity}`);
 
     /* 6) Save */
-    // 6) Save (text-first, then CSS fallbacks)
+    console.log("Looking for Save button...");
+    
+    // Try to find and click save button - it might be in a form or modal
+    let saveClicked = false;
+    
+    // First, try text-based search (more reliable)
     try {
-      await clickButtonByText(page, ["GUARDAR", "Guardar", "ACTUALIZAR", "Actualizar", "EDITAR", "Editar", "Save", "Update"], {
-        timeout: 30000,
-        scope: "form" // prioritize the edit form area
+      await clickButtonByText(page, ["GUARDAR", "Guardar", "ACTUALIZAR", "Actualizar", "Update"], {
+        timeout: 10000,
+        scope: "document" // Check whole page (form might be in modal)
       });
-    } catch {
-      // CSS fallbacks commonly used by Bootstrap-themed forms
-      const fallbacks = [
+      saveClicked = true;
+      console.log("Save button clicked via text search");
+    } catch (e) {
+      console.log("Text-based save button search failed:", e.message);
+    }
+    
+    // CSS fallbacks if text search didn't work
+    if (!saveClicked) {
+      console.log("Trying CSS selectors for save button...");
+      const saveSelectors = [
         'form button[type="submit"]',
         'form input[type="submit"]',
         'form .btn-primary',
         'form .btn-success',
-        '.content button[type="submit"]',
+        '.modal button[type="submit"]',
+        '.modal .btn-primary',
+        'button[type="submit"]',
+        '.btn-primary[type="submit"]'
       ];
-      let done = false;
-      for (const sel of fallbacks) {
+      
+      for (const sel of saveSelectors) {
         try {
-          await clickReliable(page, sel, { nav: true, timeout: 20000 });
-          done = true;
-          break;
-        } catch {}
+          const saveBtn = await page.$(sel);
+          if (saveBtn) {
+            const isVisible = await saveBtn.evaluate(el => {
+              const style = getComputedStyle(el);
+              return style.display !== 'none' && style.visibility !== 'hidden';
+            });
+            
+            if (isVisible) {
+              console.log(`Found visible save button with selector: ${sel}`);
+              await saveBtn.click({ delay: 100 });
+              saveClicked = true;
+              break;
+            }
+          }
+        } catch (e) {
+          // Try next selector
+        }
       }
-      if (!done) throw new Error("Could not find a Save/Submit button on the edit form.");
     }
+    
+    if (!saveClicked) {
+      // Last resort: use evaluate to find button by text
+      const buttonFound = await page.evaluate(() => {
+        const allButtons = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+        const saveBtn = allButtons.find(btn => {
+          const text = (btn.textContent || btn.value || "").toLowerCase().trim();
+          return text.includes("guardar") || text.includes("actualizar") || text.includes("save") || text.includes("update");
+        });
+        
+        if (saveBtn) {
+          saveBtn.click();
+          return true;
+        }
+        return false;
+      });
+      
+      if (buttonFound) {
+        saveClicked = true;
+        console.log("Save button clicked via evaluate");
+      }
+    }
+    
+    if (!saveClicked) {
+      throw new Error("Could not find a Save/Submit button on the edit form.");
+    }
+    
+    console.log("Save button clicked successfully");
     // allow the form submit to settle
     await page.waitForNetworkIdle({ idleTime: 1000, timeout: 20000 }).catch(() => {});
 
