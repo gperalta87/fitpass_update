@@ -70,6 +70,22 @@ app.get("/debug/after-save", (req, res) => {
   res.sendFile(path.resolve(p));
 });
 
+app.get("/debug/after-editar-click", (req, res) => {
+  const p = "/tmp/after-editar-click.png";
+  if (!fs.existsSync(p)) {
+    return res.status(404).send("No after-editar-click screenshot found yet");
+  }
+  res.sendFile(path.resolve(p));
+});
+
+app.get("/debug/form-not-found", (req, res) => {
+  const p = "/tmp/form-not-found.png";
+  if (!fs.existsSync(p)) {
+    return res.status(404).send("No form-not-found screenshot found yet");
+  }
+  res.sendFile(path.resolve(p));
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`[boot] Listening on 0.0.0.0:${PORT} (${new Date().toISOString()})`);
 });
