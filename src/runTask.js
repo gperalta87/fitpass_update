@@ -360,24 +360,66 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
           await delay(400);
           
           // Click the button - Turbo may update content without navigating
+          console.log("About to click EDITAR CLASE button...");
           await button.click({ delay: 100 });
           console.log("Successfully clicked EDITAR CLASE button");
           
+          // Wait a bit for Turbo to start processing
+          await delay(500);
+          
           // Wait for form to appear (either via navigation OR Turbo content update)
-          await Promise.race([
-            page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {}),
-            page.waitForSelector('#schedule_lesson_availability', { visible: true, timeout: 15000 }).catch(() => {})
-          ]);
+          // Try multiple strategies to detect the form
+          let formFound = false;
           
-          // Give Turbo a moment to update the DOM
-          await delay(1000);
+          // Strategy 1: Wait for navigation
+          try {
+            await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 10000 });
+            console.log("Navigation detected after button click");
+            formFound = true;
+          } catch (e) {
+            console.log("No navigation detected, checking for form on current page");
+          }
           
-          // Verify the form field is actually present
-          const formExists = await page.evaluate(() => {
-            return document.querySelector("#schedule_lesson_availability") !== null;
-          });
+          // Strategy 2: Wait for form field to appear
+          for (let i = 0; i < 10; i++) {
+            await delay(500);
+            const formExists = await page.evaluate(() => {
+              const field = document.querySelector("#schedule_lesson_availability");
+              const form = document.querySelector("form[action*='schedules']");
+              return field !== null || form !== null;
+            });
+            
+            if (formExists) {
+              console.log(`Edit form found after ${i + 1} attempts`);
+              formFound = true;
+              break;
+            }
+            
+            // Also check if modal content changed (Turbo might update the modal)
+            const modalContent = await page.evaluate(() => {
+              const modal = document.querySelector(".modal.show, .modal[style*='display: block']");
+              if (!modal) return null;
+              return {
+                hasForm: !!modal.querySelector("#schedule_lesson_availability"),
+                hasInputs: modal.querySelectorAll("input").length,
+                html: modal.innerHTML.substring(0, 500)
+              };
+            });
+            
+            if (modalContent && modalContent.hasForm) {
+              console.log("Edit form found inside modal");
+              formFound = true;
+              break;
+            }
+            
+            if (modalContent && modalContent.html.includes("schedule_lesson_availability")) {
+              console.log("Form HTML detected in modal");
+              formFound = true;
+              break;
+            }
+          }
           
-          if (formExists) {
+          if (formFound) {
             console.log("Edit form appeared after button click");
             buttonClicked = true;
             break;
@@ -423,42 +465,97 @@ async function clickEditarClaseButton(page, { timeout = 30000 } = {}) {
       return true;
     });
     
-    buttonClicked = buttonFound;
+    if (buttonFound) {
+      // Wait for form to appear after clicking
+      console.log("Button clicked via evaluate, waiting for form...");
+      for (let i = 0; i < 10; i++) {
+        await delay(500);
+        const formExists = await page.evaluate(() => {
+          const field = document.querySelector("#schedule_lesson_availability");
+          const form = document.querySelector("form[action*='schedules']");
+          const modal = document.querySelector(".modal.show, .modal[style*='display: block']");
+          if (modal) {
+            return !!modal.querySelector("#schedule_lesson_availability") || !!modal.querySelector("form");
+          }
+          return field !== null || form !== null;
+        });
+        
+        if (formExists) {
+          console.log(`Edit form found after ${i + 1} attempts (evaluate method)`);
+          buttonClicked = true;
+          break;
+        }
+      }
+    }
   }
 
   if (!buttonClicked) {
     throw new Error("Could not find or click EDITAR CLASE button");
   }
 
+  // If button was clicked but form check wasn't done yet, wait for it
+  if (buttonClicked) {
+    // Give Turbo more time to update the content
+    await delay(2000);
+    
+    // Take a screenshot right after clicking to see what's happening
+    try {
+      await page.screenshot({ path: "/tmp/after-editar-click.png", fullPage: true });
+      console.log("Screenshot saved after clicking EDITAR CLASE: /tmp/after-editar-click.png");
+    } catch (sErr) {
+      console.error("Failed to take screenshot:", sErr);
+    }
+  }
+  
   // Wait for the form to appear (Turbo may update content without full navigation)
   console.log("Button clicked, waiting for edit form to appear...");
   
   // Wait for form field to appear (either via navigation or Turbo update)
-  try {
-    await page.waitForSelector('#schedule_lesson_availability', { visible: true, timeout: 20000 });
-    console.log("Edit form field appeared");
-  } catch (e) {
-    // Form might already be present (Turbo updated it)
-    const formExists = await page.evaluate(() => {
-      return document.querySelector("#schedule_lesson_availability") !== null;
+  // Try multiple times with different checks
+  let formFound = false;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await delay(500);
+    
+    const formCheck = await page.evaluate(() => {
+      const field = document.querySelector("#schedule_lesson_availability");
+      const form = document.querySelector("form[action*='schedules']");
+      const modal = document.querySelector(".modal.show, .modal[style*='display: block']");
+      
+      // Check if form is in modal
+      if (modal) {
+        const modalField = modal.querySelector("#schedule_lesson_availability");
+        const modalForm = modal.querySelector("form[action*='schedules']");
+        return {
+          hasField: field !== null || modalField !== null,
+          hasForm: form !== null || modalForm !== null,
+          modalHasContent: modal.innerHTML.includes("schedule_lesson_availability")
+        };
+      }
+      
+      return {
+        hasField: field !== null,
+        hasForm: form !== null,
+        modalHasContent: false
+      };
     });
     
-    if (!formExists) {
-      throw new Error("Edit form field did not appear after clicking EDITAR CLASE button");
+    if (formCheck.hasField || formCheck.hasForm || formCheck.modalHasContent) {
+      console.log(`Edit form found after ${attempt + 1} attempts`);
+      formFound = true;
+      break;
     }
   }
   
-  // Give it a moment for any Turbo animations/updates to complete
-  await delay(1000);
-
-  // Verify we have the form (either on edit page or in modal)
-  const hasForm = await page.evaluate(() => {
-    return document.querySelector("#schedule_lesson_availability") !== null ||
-           document.querySelector("form[action*='schedules']") !== null;
-  });
-  
-  if (!hasForm) {
-    throw new Error("Edit form not found after button click");
+  if (!formFound) {
+    // Take a screenshot to debug why form didn't appear
+    try {
+      await page.screenshot({ path: "/tmp/form-not-found.png", fullPage: true });
+      console.log("Form not found - screenshot saved: /tmp/form-not-found.png");
+    } catch (sErr) {
+      console.error("Failed to take screenshot:", sErr);
+    }
+    
+    throw new Error("Edit form field did not appear after clicking EDITAR CLASE button");
   }
 
   console.log("Edit form is ready");
