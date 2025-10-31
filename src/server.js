@@ -54,6 +54,22 @@ app.get("/debug/last-screenshot", (req, res) => {
   res.sendFile(path.resolve(p));
 });
 
+app.get("/debug/before-save", (req, res) => {
+  const p = "/tmp/before-save.png";
+  if (!fs.existsSync(p)) {
+    return res.status(404).send("No before-save screenshot found yet");
+  }
+  res.sendFile(path.resolve(p));
+});
+
+app.get("/debug/after-save", (req, res) => {
+  const p = "/tmp/after-save.png";
+  if (!fs.existsSync(p)) {
+    return res.status(404).send("No after-save screenshot found yet");
+  }
+  res.sendFile(path.resolve(p));
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`[boot] Listening on 0.0.0.0:${PORT} (${new Date().toISOString()})`);
 });
