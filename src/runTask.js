@@ -686,6 +686,19 @@ export async function runTask(input = {}) {
     await capacityField.click({ clickCount: 3 }).catch(() => {});
     await capacityField.type(String(newCapacity), { delay: 15 });
     console.log(`Set capacity to: ${newCapacity}`);
+    
+    // Verify the capacity was actually set by reading the field value
+    const actualValue = await capacityField.evaluate(el => el.value);
+    console.log(`Capacity field value after setting: ${actualValue}`);
+    
+    // Take a screenshot before saving to verify the value
+    const screenshotPath = "/tmp/before-save.png";
+    try {
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      console.log(`Screenshot saved before save: ${screenshotPath}`);
+    } catch (sErr) {
+      console.error("Failed to take screenshot:", sErr);
+    }
 
     /* 6) Save */
     console.log("Looking for Save button...");
@@ -770,6 +783,15 @@ export async function runTask(input = {}) {
     console.log("Save button clicked successfully");
     // allow the form submit to settle
     await page.waitForNetworkIdle({ idleTime: 1000, timeout: 20000 }).catch(() => {});
+    
+    // Take a screenshot after save to verify the change
+    const afterSavePath = "/tmp/after-save.png";
+    try {
+      await page.screenshot({ path: afterSavePath, fullPage: true });
+      console.log(`Screenshot saved after save: ${afterSavePath}`);
+    } catch (sErr) {
+      console.error("Failed to take screenshot:", sErr);
+    }
 
     /* 7) “Editar solo esta clase” (confirmation) */
     try {
