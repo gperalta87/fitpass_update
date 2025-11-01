@@ -779,14 +779,43 @@ export async function runTask(input = {}) {
       throw new Error(`Could not find capacity field on edit page. Available inputs: ${JSON.stringify(pageInfo.allInputs)}`);
     }
     
-    // Clear and set the capacity
-    await capacityField.click({ clickCount: 3 }).catch(() => {});
+    // Clear and set the capacity - use multiple methods to ensure it sticks
+    console.log(`Setting capacity to: ${newCapacity}`);
+    
+    // Method 1: Clear the field first
+    await capacityField.click({ clickCount: 3 });
+    await delay(200);
+    await capacityField.evaluate(el => el.value = '');
+    await delay(200);
+    
+    // Method 2: Type the new value
     await capacityField.type(String(newCapacity), { delay: 15 });
-    console.log(`Set capacity to: ${newCapacity}`);
+    await delay(300);
+    
+    // Method 3: Set value directly via JavaScript (backup)
+    await capacityField.evaluate((el, val) => {
+      el.value = val;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, String(newCapacity));
+    await delay(300);
     
     // Verify the capacity was actually set by reading the field value
     const actualValue = await capacityField.evaluate(el => el.value);
     console.log(`Capacity field value after setting: ${actualValue}`);
+    
+    if (actualValue !== String(newCapacity)) {
+      console.warn(`WARNING: Capacity value mismatch! Expected: ${newCapacity}, Got: ${actualValue}`);
+      // Try one more time with direct value setting
+      await capacityField.evaluate((el, val) => {
+        el.value = val;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, String(newCapacity));
+      await delay(300);
+      const retryValue = await capacityField.evaluate(el => el.value);
+      console.log(`Capacity field value after retry: ${retryValue}`);
+    }
     
     // Take a screenshot before saving to verify the value
     const screenshotPath = "/tmp/before-save.png";
@@ -799,6 +828,26 @@ export async function runTask(input = {}) {
 
     /* 6) Save */
     console.log("Looking for Save button...");
+    
+    // First, verify we actually have a form with the capacity value set
+    const formCheck = await page.evaluate((expectedCapacity) => {
+      const field = document.querySelector("#schedule_lesson_availability");
+      if (!field) return { hasField: false, fieldValue: null, message: "Capacity field not found" };
+      
+      return {
+        hasField: true,
+        fieldValue: field.value,
+        expectedValue: expectedCapacity,
+        matches: field.value === String(expectedCapacity),
+        formAction: document.querySelector("form[action*='schedules']")?.action || null
+      };
+    }, newCapacity);
+    
+    console.log("Form check before save:", JSON.stringify(formCheck, null, 2));
+    
+    if (!formCheck.hasField || !formCheck.matches) {
+      throw new Error(`Capacity field not properly set before save. Check: ${JSON.stringify(formCheck)}`);
+    }
     
     // Try to find and click save button - it might be in a form or modal
     let saveClicked = false;
@@ -878,6 +927,35 @@ export async function runTask(input = {}) {
     }
     
     console.log("Save button clicked successfully");
+    
+    // Wait for form submission - check for confirmation modal or navigation
+    await delay(1000);
+    
+    // Check if form was submitted (look for confirmation modal or page change)
+    const formSubmitted = await page.evaluate(() => {
+      // Check for confirmation modal
+      const confirmationModal = document.querySelector(".modal.show, .modal[style*='display: block']");
+      const hasConfirmation = confirmationModal && (
+        confirmationModal.textContent.includes("EDITAR SOLO") ||
+        confirmationModal.textContent.includes("solo esta clase")
+      );
+      
+      // Check if form is gone (submitted)
+      const formStillPresent = document.querySelector("form[action*='schedules']");
+      
+      // Check for success messages
+      const successMessage = document.querySelector(".alert-success, .success, [class*='success']");
+      
+      return {
+        hasConfirmationModal: !!hasConfirmation,
+        formStillPresent: !!formStillPresent,
+        hasSuccessMessage: !!successMessage,
+        url: window.location.href
+      };
+    });
+    
+    console.log("Form submission status:", JSON.stringify(formSubmitted, null, 2));
+    
     // allow the form submit to settle
     await page.waitForNetworkIdle({ idleTime: 1000, timeout: 20000 }).catch(() => {});
     
@@ -888,6 +966,30 @@ export async function runTask(input = {}) {
       console.log(`Screenshot saved after save: ${afterSavePath}`);
     } catch (sErr) {
       console.error("Failed to take screenshot:", sErr);
+    }
+    
+    // Verify capacity was actually changed by checking the current value
+    await delay(2000);
+    const finalCapacity = await page.evaluate(() => {
+      const field = document.querySelector("#schedule_lesson_availability");
+      if (field) return field.value;
+      
+      // Check if we're back on calendar and modal shows new capacity
+      const modal = document.querySelector(".modal.show");
+      if (modal) {
+        const capacityText = modal.textContent.match(/Cupo Fitpass[:\s]+(\d+)/i);
+        if (capacityText) return capacityText[1];
+      }
+      return null;
+    });
+    
+    if (finalCapacity) {
+      console.log(`Final capacity value: ${finalCapacity} (expected: ${newCapacity})`);
+      if (finalCapacity === String(newCapacity)) {
+        console.log("✅ Capacity change verified!");
+      } else {
+        console.warn(`⚠️ Capacity mismatch! Expected ${newCapacity}, but found ${finalCapacity}`);
+      }
     }
 
     /* 7) “Editar solo esta clase” (confirmation) */
